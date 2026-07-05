@@ -1,0 +1,26 @@
+---
+# Gemma 4 26B-A4B in NVFP4 — Blackwell (B200) ONLY. Official NVIDIA ModelOpt checkpoint (~14 GB).
+# Quant auto-detected (do NOT pass --quantization). MoE NVFP4 backend: let vLLM auto-select (CUTLASS). Do NOT set VLLM_USE_FLASHINFER_MOE_FP4=1 — on this
+# image it raises "no FlashInfer NVFP4 MoE backend supports the configuration" (measured live 2026-07-04).
+# B200 (NVFP4 will not run on L40S/H100). Live-validated on B200 2026-07-05 (262144, KV 10.64M tok,
+# 40.59x, 165.9/183 GiB; soak 6/6; CUTLASS NVFP4-MoE path confirmed).
+model_repo: "nvidia/Gemma-4-26B-A4B-NVFP4"
+served_name: "gemma4-26b-a4b-nvfp4"
+tensor_parallel_size: 1
+max_model_len: 262144
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--trust-remote-code"
+  - "--limit-mm-per-prompt"
+  - '{"image":0}'
+  - "--enable-auto-tool-choice"
+  - "--reasoning-parser"
+  - "gemma4"
+  - "--tool-call-parser"
+  - "gemma4"
+  - "--kv-cache-dtype"
+  - "fp8"
+min_plan: "GPU-24xCPU-240GB-1xB200"
+min_vram_gb: 175   # B200 reports 179 GB after floor-div (183,359 MiB) — measured live 2026-07-04

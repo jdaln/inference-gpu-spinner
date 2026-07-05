@@ -1,0 +1,102 @@
+---
+# Verification-first: the UpCloud GPU template ships Docker CE + NVIDIA Container Toolkit.
+
+- name: Verify the Docker daemon is installed and running
+  ansible.builtin.command: docker info
+  register: docker_info
+  changed_when: false
+  failed_when: docker_info.rc != 0
+
+- name: Verify the NVIDIA Container Toolkit (nvidia-ctk) is present
+  ansible.builtin.command: nvidia-ctk --version
+  register: nvidia_ctk
+  changed_when: false
+  failed_when: false
+
+- name: Require the NVIDIA Container Toolkit (GPU passthrough depends on it)
+  ansible.builtin.assert:
+    that: nvidia_ctk.rc == 0
+    fail_msg: >-
+      nvidia-ctk not found — GPU passthrough to containers will fail. The UpCloud GPU
+      (NVIDIA+CUDA) template should ship it. Install it and run
+      `nvidia-ctk runtime configure --runtime=docker && systemctl restart docker`.
+
+- name: Measure /data capacity (GB) for Docker image persistence
+  ansible.builtin.shell: |
+    set -o pipefail
+    df -BG --output=size {{ data_root | quote }} | tail -1 | tr -dc '0-9'
+  args:
+    executable: /bin/bash
+  register: data_capacity
+  changed_when: false
+  failed_when: (data_capacity.stdout | trim | length) == 0
+
+- name: Decide whether Docker's data-root goes on the persistent /data disk
+  ansible.builtin.set_fact:
+    docker_use_data_root: >-
+      {{ (docker_data_root_on_data | bool)
+         and ((data_capacity.stdout | trim | int) >= (docker_data_root_min_gb | int)) }}
+
+- name: Persist Docker images on /data so they survive teardown (no ~30 GB re-pull each spin)
+  when: docker_use_data_root | bool
+  block:
+    - name: Ensure the Docker data-root directory exists on /data
+      ansible.builtin.file:
+        path: "{{ data_root }}/docker"
+        state: directory
+        mode: "0711"
+
+    - name: Read the existing Docker daemon.json (if any)
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: docker_daemon_raw
+      failed_when: false
+
+    - name: Parse the existing daemon.json (preserve settings incl. the NVIDIA runtime)
+      block:
+        - name: Decode + parse daemon.json (absent or empty -> start from {})
+          ansible.builtin.set_fact:
+            docker_daemon_cur: >-
+              {{ (docker_daemon_raw.content | b64decode | from_json)
+                 if ((docker_daemon_raw.content is defined)
+                     and ((docker_daemon_raw.content | b64decode | trim | length) > 0))
+                 else {} }}
+      rescue:
+        - name: Refuse to clobber a malformed daemon.json
+          ansible.builtin.fail:
+            msg: >-
+              /etc/docker/daemon.json exists but is not valid JSON. Refusing to overwrite it —
+              that could drop the NVIDIA runtime config and break GPU containers. Fix or remove
+              the file on the box, then re-run.
+
+    - name: Set data-root in daemon.json (merged — preserves the NVIDIA runtime config)
+      ansible.builtin.copy:
+        content: "{{ (docker_daemon_cur | combine({'data-root': data_root ~ '/docker'})) | to_nice_json }}"
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+      register: docker_daemon_written
+
+    # Must restart inline (before the vLLM image pull in the vllm role); a play-end handler
+    # would run too late, after images were already pulled to the old data-root.
+    - name: Restart Docker to apply the new data-root  # noqa: no-handler
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+      when: docker_daemon_written is changed
+
+- name: Note when /data is too small for image persistence (falling back to boot disk)
+  ansible.builtin.debug:
+    msg: >-
+      /data is under {{ docker_data_root_min_gb }} GB — keeping Docker images on the boot disk
+      (re-pulled each spin). Grow the weights disk and re-run `bin/spin persistent-init` to enable
+      image persistence on /data.
+  when:
+    - docker_data_root_on_data | bool
+    - not (docker_use_data_root | bool)
+
+- name: Optional GPU-in-container smoke test (pulls the vLLM image; off by default)
+  ansible.builtin.command: "docker run --rm --gpus all {{ vllm_image }} nvidia-smi"
+  register: docker_gpu
+  changed_when: false
+  failed_when: docker_gpu.rc != 0
+  when: docker_gpu_smoketest | default(false)

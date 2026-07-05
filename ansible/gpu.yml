@@ -1,0 +1,9 @@
+---
+# Thin entrypoint: run only the GPU verification role.
+#   ansible-playbook ansible/gpu.yml
+- name: GPU verification
+  hosts: gpu
+  become: true
+  roles:
+    - role: gpu
+      tags: [gpu]

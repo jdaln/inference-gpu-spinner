@@ -1,0 +1,12 @@
+[Unit]
+Description=Power the box off daily at {{ auto_shutdown_time }} {{ auto_shutdown_timezone }} (cost safety)
+
+[Timer]
+# Local-time daily trigger; the timezone is embedded so the box clock can stay UTC.
+OnCalendar=*-*-* {{ auto_shutdown_time }} {{ auto_shutdown_timezone }}
+# Do NOT catch up a missed run on boot — a freshly spun-up box must not immediately power off.
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

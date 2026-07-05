@@ -1,0 +1,27 @@
+---
+# GLM-5.2 (Z.ai / zai-org) FP8 — 753B total / ~40B active MoE, text-only, 1M ctx. INTENTIONALLY kept
+# requires_review: an 8x B200 node is ~36 €/h, too expensive to validate — gated ON PURPOSE (cost),
+# not a reliability doubt. Run the validated NVFP4 path (glm52-nvfp4.yml, 4x B200 ~18 €/h) instead.
+# WARNING: FP8 weights ~756 GB fit ONLY an 8x B200 node (8x179 GB) — NOT 8x H100 (8x80 = 640 GB is
+# too small). requires_review gates it (the vllm role refuses without -e allow_unvalidated_model=true).
+# The RUNNABLE GLM path on this account is glm52-nvfp4.yml (NVFP4 on 4x B200 at half the price).
+model_repo: "zai-org/GLM-5.2-FP8"
+served_name: "glm52"
+tensor_parallel_size: 8
+max_model_len: 1048576
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--enable-expert-parallel"
+  - "--trust-remote-code"
+  - "--reasoning-parser"
+  - "glm45"
+  - "--tool-call-parser"
+  - "glm47"
+  - "--enable-auto-tool-choice"
+  - "--kv-cache-dtype"
+  - "fp8_e4m3"
+min_plan: "GPU-192xCPU-1920GB-8xB200"
+min_vram_gb: 76
+requires_review: true

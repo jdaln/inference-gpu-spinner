@@ -1,0 +1,9 @@
+---
+# Thin entrypoint: run only the Docker verification role.
+#   ansible-playbook ansible/docker.yml
+- name: Docker verification
+  hosts: gpu
+  become: true
+  roles:
+    - role: docker
+      tags: [docker]

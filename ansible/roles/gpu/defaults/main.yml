@@ -1,0 +1,5 @@
+---
+# Minimum NVIDIA driver major version required on Blackwell-class GPUs (B100/B200/GB200).
+# Older GPUs (L4/L40S/H100) are not checked against this. The UpCloud GPU template ships a
+# recent driver; this guard catches a stale template before it fails obscurely inside vLLM/CUDA.
+gpu_min_driver_blackwell: 570

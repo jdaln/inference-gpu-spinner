@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars (gitignored). REQUIRED: os_template and ssh_public_keys.
+
+# UpCloud GPU template (NVIDIA + CUDA + Docker). Find the exact title/UUID with:
+#   upctl storage list --public --template
+os_template = "REPLACE_ME"   # e.g. the NVIDIA/CUDA Ubuntu template title or its UUID
+
+# SSH public keys installed for root login on the GPU box.
+ssh_public_keys = [
+  # "ssh-ed25519 AAAA... you@host",
+]
+
+# --- Optional overrides ---
+# plan            = "GPU-8xCPU-64GB-1xL40S" # default; smallest tier the current models fit (L4 24GB fits none)
+# operator_ip     = ""                       # empty = auto-detect via api.ipify.org
+# operator_cidrs  = ["155.105.0.0/16", "178.197.0.0/16"]  # allowlist range(s) for a rotating egress (takes priority over operator_ip)
+# os_disk_size_gb = 100
+# hostname        = "gpu-spinner"

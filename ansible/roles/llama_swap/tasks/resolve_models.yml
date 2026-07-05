@@ -1,0 +1,22 @@
+---
+# Resolve `swap_profiles` (a list of ansible/models/<name>.yml profile NAMES) into `swap_models`
+# entries, so a swap preset is just a menu of names and each model is defined ONCE in ansible/models/.
+# Any directly-provided `swap_models` (inline dicts, for power users) is preserved and appended to.
+#
+# swap_models_dir defaults to {{ playbook_dir }}/models when this runs inside the role under
+# site.yml; tests/render-swap-profile.yml overrides it. Imported by both so resolution is tested
+# in CI without a GPU.
+- name: Resolve swap_profiles (profile names) into swap_models entries
+  ansible.builtin.set_fact:
+    swap_models: "{{ (swap_models | default([])) + [_entry] }}"
+  vars:
+    _profile: "{{ lookup('ansible.builtin.file', swap_models_dir ~ '/' ~ item ~ '.yml') | from_yaml }}"
+    _entry:
+      name: "{{ item }}"
+      model_repo: "{{ _profile.model_repo }}"
+      max_model_len: "{{ _profile.max_model_len }}"
+      gpu_memory_utilization: "{{ _profile.gpu_memory_utilization | default(gpu_memory_utilization | default(0.90)) }}"
+      args: "{{ _profile.extra_vllm_args | default([]) }}"
+  loop: "{{ swap_profiles | default([]) }}"
+  loop_control:
+    label: "{{ item }}"

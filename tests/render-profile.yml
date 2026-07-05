@@ -1,0 +1,30 @@
+---
+# CI guard: render one model profile through the vLLM compose template and parse the result.
+# Catches per-profile template/YAML breakage (undefined vars, quoting) without a GPU:
+#   ansible-playbook tests/render-profile.yml -e profile=<name>
+# NOTE: this validates rendering only — flag VALUES are proven by live runs (docs/validation.md).
+- name: Render a model profile through the compose template
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Load shared defaults
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../ansible/group_vars/all.yml"
+
+    - name: Load the model profile
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../ansible/models/{{ profile }}.yml"
+
+    - name: Render the compose template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../ansible/roles/vllm/templates/compose.yml.j2"
+        dest: "/tmp/render-{{ profile }}.yml"
+        mode: "0644"
+
+    - name: Rendered compose parses as YAML with a vllm service
+      ansible.builtin.assert:
+        that:
+          - rendered.services.vllm.command is defined
+          - rendered.services.caddy is defined
+        fail_msg: "profile '{{ profile }}' renders invalid compose YAML"
+      vars:
+        rendered: "{{ lookup('ansible.builtin.file', '/tmp/render-' ~ profile ~ '.yml') | from_yaml }}"

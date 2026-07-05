@@ -1,0 +1,29 @@
+---
+# GLM-5.2 (Z.ai, 753B total / ~40B active MoE, text-only, 1M native ctx) in NVFP4 — the runnable
+# multi-GPU path on this account: 4x B200 (GPU-96xCPU-960GB-4xB200, TP=4). NVFP4 weights ~377 GB
+# fit 4x179 GB VRAM with headroom (the FP8 build ~756 GB needs 8x B200 — see glm52.yml).
+# Quant auto-detected (no --quantization). MoE NVFP4 backend: vLLM auto-selects CUTLASS — do NOT
+# set VLLM_USE_FLASHINFER_MOE_FP4 (raises "no FlashInfer NVFP4 MoE backend..." on this image).
+# max_model_len 786432 (768K): vLLM measured the 4xB200 KV ceiling at 793,216 tokens for one full-len
+# request (1M needs 53.9 GiB KV vs 40.8 available) — live crash-loop 2026-07-04.
+# NOTE: needs ~380 GB free on /data — wipe old model caches before the first download (LRU disk).
+model_repo: "nvidia/GLM-5.2-NVFP4"
+served_name: "glm52-nvfp4"
+tensor_parallel_size: 4
+max_model_len: 786432
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--enable-expert-parallel"
+  - "--trust-remote-code"
+  - "--reasoning-parser"
+  - "glm45"
+  - "--tool-call-parser"
+  - "glm47"
+  - "--enable-auto-tool-choice"
+  - "--kv-cache-dtype"
+  - "fp8_e4m3"
+min_plan: "GPU-96xCPU-960GB-4xB200"
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB after floor-div)
+health_wait_retries: 150   # x10s = 25 min — measured ~18 min cold start (447 GB load + 457 s engine init)

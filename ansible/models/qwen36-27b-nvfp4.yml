@@ -1,0 +1,23 @@
+---
+# Qwen3.6-27B in NVFP4 — Blackwell (B200) ONLY. Official NVIDIA ModelOpt checkpoint
+# (nvidia/Qwen3.6-27B-NVFP4, Apache-2.0, "ready for inference with vLLM"). Dense, so no
+# FlashInfer-MoE env needed. Quant auto-detected (no --quantization). --language-model-only drops
+# the vision tower; --enforce-eager guards the hybrid (Mamba) state cache (drop once stable on
+# Blackwell — B200 has ample headroom for a 27B at NVFP4). min_vram_gb=175 pins to B200. Live-validated
+# on B200 2026-07-04 (262144, KV 4.41M tok, 16.84x, 169/183 GiB); re-served via llama-swap 2026-07-05.
+model_repo: "nvidia/Qwen3.6-27B-NVFP4"
+served_name: "qwen3.6-27b-nvfp4"
+tensor_parallel_size: 1
+max_model_len: 262144
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--language-model-only"
+  - "--reasoning-parser"
+  - "qwen3"
+  - "--enforce-eager"
+  - "--kv-cache-dtype"
+  - "fp8"
+min_plan: "GPU-24xCPU-240GB-1xB200"
+min_vram_gb: 175   # B200 reports 179 GB after floor-div (183,359 MiB) — measured live 2026-07-04

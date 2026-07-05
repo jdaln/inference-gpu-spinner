@@ -1,0 +1,58 @@
+---
+# Shared defaults for the GPU box. Override per-run with -e.
+
+# --- Filesystem layout (the persistent disk is mounted at data_root) ---
+data_root: /data
+hf_cache_dir: "{{ data_root }}/hf-cache"
+caddy_data_dir: "{{ data_root }}/caddy"
+compose_dir: /opt/gpu-spinner
+
+# --- Persistent data disk (created/mounted by the gpu role) ---
+weights_fs_label: gpu-weights
+weights_fs_type: ext4
+
+# --- vLLM container (pin the exact tag for reproducible spin-ups) ---
+vllm_image: "vllm/vllm-openai:v0.23.0-cu129-ubuntu2404"
+vllm_port: 8000
+# Fallback GPU memory fraction. Every model profile sets its own gpu_memory_utilization (which wins);
+# this is the default for a llama-swap backend whose swap_models entry omits it.
+gpu_memory_utilization: 0.90
+
+# --- Caddy (reverse proxy + automatic TLS) ---
+caddy_image: "caddy:2"
+
+# --- Model selection: `-e vllm_model=qwen36` loads ansible/models/qwen36.yml ---
+vllm_model: qwen36
+
+# --- Secrets: read from the OPERATOR's environment at run time (see .env.example).
+#     Lookups run on the control machine; values are rendered into 0600 files on the box. ---
+acme_email: "{{ lookup('ansible.builtin.env', 'ACME_EMAIL') }}"
+vllm_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_API_KEY') }}"
+hf_token: "{{ lookup('ansible.builtin.env', 'HF_TOKEN') }}"
+
+# --- Auto power-off SAFETY (default ON): the box powers ITSELF off at a local time so a forgotten
+#     server stops billing GPU. Powers off (stop), never destroys. Cost-saving ONLY where stopped
+#     servers aren't billed (verified: UpCloud). Set at deploy time via bin/spin --shutdown-at /
+#     --shutdown-tz / --no-shutdown. See roles/autostop. ---
+auto_shutdown_enabled: true
+auto_shutdown_time: "21:00"
+auto_shutdown_timezone: "Europe/Zurich"
+# Separate, opt-in idle-based watchdog:
+autostop_idle_enabled: false
+
+# --- Multi-model serving via llama-swap (live-validated on H100 2026-07-04 — docs/validation.md).
+#     One model in VRAM at a time; llama-swap starts/stops vLLM docker backends on demand and Caddy
+#     fronts them all on vllm_port. Clients pick a model via the OpenAI `model` field.
+#     Easiest: `bin/spin up --swap-profile <name>` (presets in ansible/swap-profiles/; list them with
+#     `bin/spin swap-profiles`). See docs/gpu-spinner.md → Multi-model serving, and roles/llama_swap. ---
+multi_model_enabled: false
+swap_idle_ttl: 1800   # seconds a backend stays loaded after its last request, then unloads
+# swap_profiles: menu of ansible/models/<name>.yml profile NAMES (set by a --swap-profile preset);
+# resolved to swap_models by roles/llama_swap so each model is defined once in ansible/models/.
+swap_profiles: []
+# swap_models: advanced/inline escape hatch — full dicts, appended to whatever swap_profiles resolves.
+#   e.g. [{ name: "qwen36", model_repo: "Qwen/Qwen3.6-27B-FP8", max_model_len: 16384, args: [...] }]
+swap_models: []
+
+# sslip_host is supplied at run time by bin/spin (from the tofu output), e.g.
+#   -e sslip_host=1-2-3-4.sslip.io

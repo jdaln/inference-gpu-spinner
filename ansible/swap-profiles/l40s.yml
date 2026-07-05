@@ -1,0 +1,13 @@
+---
+# Multi-model swap preset — single L40S (48 GB). Each model loads on demand, one in VRAM at a time
+# (llama-swap starts/stops a vLLM backend per request; an idle one unloads after swap_idle_ttl).
+# Deploy:  bin/spin up --swap-profile l40s --plan GPU-8xCPU-64GB-1xL40S
+#
+# `swap_profiles` lists ansible/models/<name>.yml profiles by name — each model's repo, context and
+# vLLM args are taken from that profile (defined once), so this file is just the menu. Clients pick a
+# model by putting its name here (e.g. "qwen36") in the OpenAI `model` field.
+swap_profiles:
+  - qwen36        # Qwen3.6-27B FP8
+  - gemma4-26b    # Gemma 4 26B-A4B FP8 (MoE)
+  - gemma4-31b    # Gemma 4 31B FP8 (dense, tight fit — loads alone)
+# swap_idle_ttl: 1800   # optional override (seconds a backend stays warm after its last request)

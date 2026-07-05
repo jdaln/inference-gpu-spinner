@@ -1,0 +1,71 @@
+# Rendered by Ansible — do not edit on the host (changes are overwritten on next spin-up).
+# Single ephemeral node: vLLM (OpenAI-compatible) behind Caddy (auto-TLS).
+services:
+{% if not (multi_model_enabled | default(false) | bool) %}
+  vllm:
+    image: {{ vllm_image }}
+    restart: unless-stopped
+    ipc: host                       # required by vLLM (shared memory); avoids cryptic CUDA errors
+    command:
+      # model as a positional arg (vllm serve deprecates --model)
+      - "{{ model_repo }}"
+      - "--served-model-name={{ served_name }}"
+      - "--max-model-len={{ max_model_len }}"
+      - "--gpu-memory-utilization={{ gpu_memory_utilization }}"
+      - "--tensor-parallel-size={{ tensor_parallel_size }}"
+      - "--dtype={{ dtype }}"
+{% if enable_lora | default(false) %}
+      - "--enable-lora"
+      - "--max-lora-rank={{ max_lora_rank | default(16) }}"
+      - "--max-loras={{ max_loras | default(4) }}"
+{% if (lora_modules | default([])) | length > 0 %}
+      - "--lora-modules"
+{% for m in lora_modules %}
+      - "{{ m.name }}={{ m.path }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+{% for arg in extra_vllm_args | default([]) %}
+      - '{{ arg }}'
+{% endfor %}
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+{% for k, v in (extra_env | default({})).items() %}
+      - {{ k }}={{ v }}
+{% endfor %}
+    # Secrets (VLLM_API_KEY, optional HF_TOKEN) load from the 0600 .env so they stay out of the
+    # container command/argv and `docker inspect` Args. vLLM reads VLLM_API_KEY as the --api-key
+    # fallback. This mirrors the llama-swap backends, which use --env-file with the same file.
+    env_file:
+      - "{{ compose_dir }}/.env"
+    volumes:
+      - {{ hf_cache_dir }}:/root/.cache/huggingface
+    ports:
+      - "127.0.0.1:{{ vllm_port }}:8000"   # never exposed publicly; Caddy fronts it
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 600s
+{% endif %}
+
+  caddy:
+    image: {{ caddy_image }}
+    restart: unless-stopped
+    network_mode: host              # binds :80/:443 on the host; reaches vLLM on 127.0.0.1
+    volumes:
+      - {{ compose_dir }}/Caddyfile:/etc/caddy/Caddyfile:ro
+      - {{ caddy_data_dir }}:/data  # persisted cert store — survives teardown, avoids re-issuing
+{% if not (multi_model_enabled | default(false) | bool) %}
+    depends_on:
+      - vllm
+{% endif %}

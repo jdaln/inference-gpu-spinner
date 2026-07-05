@@ -1,0 +1,165 @@
+---
+- name: Check the requested model profile exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/models/{{ vllm_model }}.yml"
+  register: model_profile_file
+  delegate_to: localhost
+  become: false
+
+- name: Fail clearly on an unknown model profile
+  ansible.builtin.assert:
+    that: model_profile_file.stat.exists
+    fail_msg: "Unknown model profile '{{ vllm_model }}'. Pick one of ansible/models/*.yml (e.g. qwen36, gemma4-31b, qwen36-35b)."
+
+- name: Load the selected model profile
+  ansible.builtin.include_vars: "{{ playbook_dir }}/models/{{ vllm_model }}.yml"
+
+- name: Guard against an unvalidated (too-large) model profile
+  ansible.builtin.assert:
+    that: not (requires_review | default(false) | bool) or (allow_unvalidated_model | default(false) | bool)
+    fail_msg: >-
+      Model profile '{{ vllm_model }}' is marked requires_review — it needs a larger,
+      multi-GPU plan and will not fit the default L4. Choose an appropriate --plan and
+      re-run with -e allow_unvalidated_model=true.
+
+- name: Preflight — this GPU has enough VRAM for the selected model profile
+  ansible.builtin.assert:
+    that:
+      - (gpu_total_vram_gb is not defined) or (allow_unvalidated_model | default(false) | bool) or
+        ((gpu_total_vram_gb | int) >= (min_vram_gb | default(0) | int))
+    fail_msg: >-
+      Model '{{ vllm_model }}' needs ~{{ min_vram_gb | default('?') }} GB of VRAM but this GPU
+      reports {{ gpu_total_vram_gb | default('?') }} GB. Pick a larger --plan (this profile's floor
+      is {{ min_plan | default('an L40S or larger') }}) or override with -e allow_unvalidated_model=true.
+      (Running anyway would OOM at vLLM start on a GPU you are already paying for.)
+
+- name: Require HF_TOKEN for a gated model profile (fail clearly, not a mid-deploy 401)
+  ansible.builtin.assert:
+    that: not (gated | default(false) | bool) or ((hf_token | default('') | length) > 0)
+    fail_msg: >-
+      Model profile '{{ vllm_model }}' is marked `gated: true` but no HF_TOKEN is set — the weight
+      download would 401. Set HF_TOKEN in your environment (.env) and accept the model's license on
+      Hugging Face, then re-run. (All current profiles are ungated; check a repo's gate with
+      `curl https://huggingface.co/api/models/<repo> | jq .gated`.)
+
+- name: Require the sslip hostname (bin/spin passes it from the tofu output)
+  ansible.builtin.assert:
+    that:
+      - sslip_host is defined
+      - sslip_host | length > 0
+    fail_msg: "sslip_host is not set. bin/spin passes it via -e from the persistent-stack output."
+
+- name: Require secrets in the environment
+  ansible.builtin.assert:
+    that:
+      - acme_email | default('') | length > 0
+      - "'@' in (acme_email | default(''))"
+      # Let's Encrypt REJECTS placeholder domains (example.com/org/net, .invalid, .local, .test) as
+      # a forbidden contact — Caddy then never gets a cert and HTTPS silently fails AFTER a full
+      # deploy. Catch it upfront (learned live 2026-07-05: gpu-spinner@example.com blocked the cert).
+      - not (acme_email | default('') | lower | regex_search('@(example\.(com|org|net)|[^@]*\.(invalid|local|test))$'))
+      - vllm_api_key | default('') | length > 0
+    fail_msg: >-
+      ACME_EMAIL must be a REAL deliverable address and VLLM_API_KEY must be set (see .env.example).
+      Let's Encrypt refuses placeholder domains like example.com/.local/.test, so Caddy would never
+      obtain a TLS cert. Current ACME_EMAIL='{{ acme_email | default('') }}'.
+
+- name: Ensure the compose directory exists
+  ansible.builtin.file:
+    path: "{{ compose_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Render the compose env file (contains the vLLM API key)
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ compose_dir }}/.env"
+    mode: "0600"
+  no_log: true
+  notify: Restart gpu-spinner
+
+- name: Render the docker compose file
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ compose_dir }}/compose.yml"
+    mode: "0640"
+  notify: Restart gpu-spinner
+
+- name: Render the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ compose_dir }}/Caddyfile"
+    mode: "0640"
+  notify: Restart gpu-spinner
+
+# Retries: on a fresh box this runs seconds after boot and systemd-resolved may not be ready yet
+# (registry lookups time out) — the same boot-time DNS race the systemd unit tolerates. With the
+# Docker data-root on /data the image is usually already present and the pull is a quick check.
+- name: Pre-pull container images (the vLLM CUDA image is large; avoids the systemd start timeout)
+  ansible.builtin.command:
+    cmd: "docker compose -f {{ compose_dir }}/compose.yml pull"
+  changed_when: false
+  register: vllm_prepull
+  retries: 5
+  delay: 15
+  until: vllm_prepull.rc == 0
+
+- name: Install the gpu-spinner systemd unit
+  ansible.builtin.template:
+    src: gpu-spinner.service.j2
+    dest: /etc/systemd/system/gpu-spinner.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart gpu-spinner
+
+# Switching multi-model -> single-model: gpu-swap (llama-swap) would still hold 127.0.0.1:8000 and
+# deadlock the vLLM container's bind. Mirror the autostop opt-out pattern: stop/disable + remove.
+- name: Stop and disable gpu-swap when not in multi-model mode
+  ansible.builtin.systemd:
+    name: gpu-swap
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not (multi_model_enabled | default(false) | bool)
+
+- name: Remove the gpu-swap unit + config when not in multi-model mode
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/gpu-swap.service
+    - "{{ compose_dir }}/llama-swap.yaml"
+  register: vllm_swap_removed
+  when: not (multi_model_enabled | default(false) | bool)
+
+- name: Reload systemd after removing gpu-swap
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - not (multi_model_enabled | default(false) | bool)
+    - vllm_swap_removed is changed
+
+- name: Enable and start the gpu-spinner stack
+  ansible.builtin.systemd:
+    name: gpu-spinner
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Apply the notified compose/unit restart NOW (not at play-end) so the health check below waits on
+# the NEWLY-deployed container, not the previously-running one (which would mask a broken redeploy).
+- name: Flush handlers before the health check
+  ansible.builtin.meta: flush_handlers
+
+# Big models outlive the default 15-min wait (measured: GLM-5.2 4xB200 ~18 min cold-start incl.
+# 457s engine init) — profiles override health_wait_retries (x10s) to match their measured startup.
+- name: Wait for vLLM to report healthy (weight load + CUDA graph capture is slow)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ vllm_port }}/health"
+    status_code: [200, 503]
+  register: vllm_health
+  retries: "{{ health_wait_retries | default(90) | int }}"
+  delay: 10
+  until: vllm_health.status | default(0) == 200
+  when: not (multi_model_enabled | default(false) | bool)   # swap mode runs llama-swap on this port instead

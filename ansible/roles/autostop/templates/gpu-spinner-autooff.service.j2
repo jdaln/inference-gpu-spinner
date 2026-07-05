@@ -1,0 +1,6 @@
+[Unit]
+Description=GPU Spinner scheduled self-shutdown (powers the box OFF; on UpCloud a stopped server stops billing)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff

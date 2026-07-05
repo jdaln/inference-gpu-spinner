@@ -1,0 +1,17 @@
+# Rendered by Ansible. Automatic HTTPS via Let's Encrypt for the sslip.io hostname.
+{
+    email {{ acme_email }}
+}
+
+{{ sslip_host }} {
+    # Force HTTP-01 (port 80). TLS-ALPN-01 (443) is disabled because 443 is
+    # firewalled to the operator IP, so LE's validators can't reach it there.
+    # NOTE: do NOT pass an email argument to `tls` here — Caddy v2 rejects
+    # `tls <email> { issuer acme ... }`. The global `email` (above) supplies it.
+    tls {
+        issuer acme {
+            disable_tlsalpn_challenge
+        }
+    }
+    reverse_proxy 127.0.0.1:{{ vllm_port }}
+}

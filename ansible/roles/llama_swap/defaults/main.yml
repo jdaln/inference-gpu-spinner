@@ -1,0 +1,15 @@
+---
+# llama-swap release (github.com/mostlygeek/llama-swap). Asset: llama-swap_<version>_linux_<arch>.tar.gz
+llama_swap_version: "233"
+llama_swap_arch: amd64
+llama_swap_base: "https://github.com/mostlygeek/llama-swap/releases/download"
+# sha256 of llama-swap_233_linux_amd64.tar.gz (from the release's checksums file). Pinned so a
+# tampered/corrupt download is rejected instead of silently installed. NOTE: GitHub release assets
+# are MUTABLE — the maintainer re-uploaded v233 on 2026-07-04, changing this hash. If the download
+# starts failing the checksum, re-fetch from llama-swap_<ver>_checksums.txt and update here (or set
+# "" to skip the check, e.g. when bumping llama_swap_version before you've looked up the new hash).
+llama_swap_sha256: "2382e41ff7ab2de363176bd3a8ff0f71e50e0c3fe3d8c9f334d7e9ac025a569c"
+# swap_models, swap_profiles, swap_idle_ttl, multi_model_enabled come from group_vars/all.yml.
+# Directory holding the per-model profiles that swap_profiles names resolve against (see
+# resolve_models.yml). Under site.yml, playbook_dir is ansible/, so this is ansible/models/.
+swap_models_dir: "{{ playbook_dir }}/models"

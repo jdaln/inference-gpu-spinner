@@ -1,0 +1,106 @@
+---
+# Verification-first: the UpCloud GPU template already has the NVIDIA driver + CUDA.
+# We assert it works, then prepare the persistent data disk.
+
+- name: Verify the NVIDIA driver is present (do NOT install — template ships it)
+  ansible.builtin.command: nvidia-smi
+  register: gpu_nvidia_smi
+  changed_when: false
+  failed_when: gpu_nvidia_smi.rc != 0
+
+- name: Report detected GPU(s)
+  ansible.builtin.debug:
+    msg: "{{ gpu_nvidia_smi.stdout_lines | select('search', 'NVIDIA') | list }}"
+
+- name: Query GPU model, driver version, and total VRAM (MiB) for preflight checks
+  ansible.builtin.command: nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits
+  register: gpu_query
+  changed_when: false
+
+- name: Record GPU facts (model, driver major, per-GPU VRAM in GB)
+  ansible.builtin.set_fact:
+    gpu_name: "{{ (gpu_query.stdout_lines[0] | split(','))[0] | trim }}"
+    gpu_driver_major: "{{ ((gpu_query.stdout_lines[0] | split(','))[1] | trim | regex_search('[0-9]+')) | int }}"
+    gpu_total_vram_gb: "{{ (((gpu_query.stdout_lines[0] | split(','))[2] | trim | int) // 1024) | int }}"
+
+- name: Require a recent driver on Blackwell-class GPUs (CUDA/vLLM needs >= {{ gpu_min_driver_blackwell }})
+  ansible.builtin.assert:
+    that: (gpu_driver_major | int) >= (gpu_min_driver_blackwell | int)
+    fail_msg: >-
+      {{ gpu_name }} is Blackwell-class but the driver is {{ gpu_driver_major }}
+      (< {{ gpu_min_driver_blackwell }}). The UpCloud GPU template should ship a recent driver;
+      this one is too old for this GPU.
+  when: gpu_name is search('B100') or gpu_name is search('B200') or gpu_name is search('GB200')
+
+- name: Check whether the persistent weights filesystem already exists (re-attach case)
+  ansible.builtin.command: "blkid -L {{ weights_fs_label }}"
+  register: weights_blkid
+  changed_when: false
+  failed_when: false
+
+- name: Discover the raw data disk (only when no labelled FS exists yet)
+  ansible.builtin.shell: |
+    set -o pipefail
+    root_part="$(findmnt -no SOURCE /)"
+    root_pk="$(lsblk -no PKNAME "$root_part" 2>/dev/null | head -1)"
+    root_disk=""
+    [ -n "$root_pk" ] && root_disk="/dev/$root_pk"
+    # Whole disks with no filesystem signature (NF==1), excluding the OS disk.
+    cands="$(lsblk -dpno NAME,FSTYPE | awk -v root="$root_disk" '$1 != root && NF == 1 { print $1 }')"
+    n="$(printf '%s\n' "$cands" | grep -c .)"
+    if [ "$n" -eq 1 ]; then printf '%s' "$cands";
+    elif [ "$n" -eq 0 ]; then printf '';
+    else printf 'MULTIPLE:%s' "$(printf '%s' "$cands" | tr '\n' ',')"; fi
+  args:
+    executable: /bin/bash
+  register: weights_disk
+  changed_when: false
+  when: weights_blkid.rc != 0
+
+- name: Refuse to format unless exactly one unformatted data disk is found
+  ansible.builtin.fail:
+    msg: >-
+      Could not safely identify the persistent data disk (got:
+      '{{ weights_disk.stdout | default('') | trim }}'). Expected exactly one
+      unformatted disk besides the OS disk; refusing to format. Inspect with `lsblk`.
+  when:
+    - weights_blkid.rc != 0
+    - ((weights_disk.stdout | default('') | trim) == '') or ((weights_disk.stdout | default('')) is search('^MULTIPLE:'))
+
+- name: Create the ext4 filesystem on the data disk (first spin-up only; never reformats)
+  community.general.filesystem:
+    fstype: "{{ weights_fs_type }}"
+    dev: "{{ weights_disk.stdout | trim }}"
+    opts: "-L {{ weights_fs_label }}"
+    force: false
+  when:
+    - weights_blkid.rc != 0
+    - (weights_disk.stdout | default('') | trim) != ''
+    - not ((weights_disk.stdout | default('')) is search('^MULTIPLE:'))
+
+- name: Mount the persistent data disk by label at {{ data_root }}
+  ansible.posix.mount:
+    path: "{{ data_root }}"
+    src: "LABEL={{ weights_fs_label }}"
+    fstype: "{{ weights_fs_type }}"
+    opts: defaults,nofail
+    state: mounted
+
+- name: Resolve the data disk device
+  ansible.builtin.command: "findmnt -no SOURCE {{ data_root }}"
+  register: data_device
+  changed_when: false
+
+- name: Grow the data filesystem to fill the disk (after a persistent-disk resize)
+  ansible.builtin.command: "resize2fs {{ data_device.stdout | trim }}"
+  register: data_resize
+  changed_when: "'Nothing to do' not in (data_resize.stdout + data_resize.stderr)"
+
+- name: Ensure HF cache and Caddy data directories exist on the persistent disk
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ hf_cache_dir }}"
+    - "{{ caddy_data_dir }}"

@@ -1,0 +1,26 @@
+---
+# Gemma 4 26B-A4B (Google) — MoE 25.2B total / 3.8B active, multimodal (image+text) — in FP8.
+# FP8-Dynamic compressed-tensors build for vLLM; quant auto-detected (no --quantization flag).
+# Fits a single L40S 48GB at the EDGE (~40-44 GB, text-only); H100 80GB is the safe choice.
+# --limit-mm-per-prompt image=0 drops the vision tower for text-only serving (this arch's
+# --language-model-only equivalent). Live-validated on a single L40S 2026-07-05 (KV 986,681 tok,
+# 7.53x @131072, 41.6/46 GiB; soak 6/6 + traps declined). L40S edge fit — --plan ...1xH100 for headroom.
+model_repo: "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
+served_name: "gemma4-26b-a4b-fp8"
+tensor_parallel_size: 1
+max_model_len: 131072
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--limit-mm-per-prompt"
+  - '{"image":0}'
+  - "--enable-auto-tool-choice"
+  - "--reasoning-parser"
+  - "gemma4"
+  - "--tool-call-parser"
+  - "gemma4"
+  - "--kv-cache-dtype"
+  - "fp8"
+min_plan: "GPU-8xCPU-64GB-1xL40S"
+min_vram_gb: 40

@@ -1,0 +1,10 @@
+---
+# Ansible Galaxy collections used by this project.
+# No external ROLES are used: the UpCloud "Ubuntu with NVIDIA Drivers and CUDA"
+# template pre-ships the NVIDIA driver, CUDA, NVIDIA Container Toolkit and Docker,
+# so our roles only verify those and then configure vLLM + Caddy.
+collections:
+  - name: ansible.posix       # ansible.posix.mount (fstab)
+    version: ">=1.5.0"
+  - name: community.general   # community.general.filesystem (mkfs)
+    version: ">=8.0.0"

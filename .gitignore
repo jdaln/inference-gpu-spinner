@@ -1,0 +1,40 @@
+# --- Secrets & local config — NEVER commit ---
+.env
+*.env
+!.env.example
+*.tfvars
+!*.tfvars.example
+*.auto.tfvars
+*vault*
+!*vault*.example
+
+# --- OpenTofu / Terraform ---
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored (commit it for reproducible providers).
+
+# --- Ansible ---
+ansible/inventory/hosts.ini
+*.retry
+.ansible/
+
+# --- Python / tooling ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# --- OS / editor ---
+.DS_Store
+*.swp
+*~
+TODO.txt
+plan.md

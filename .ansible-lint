@@ -1,0 +1,11 @@
+---
+profile: production
+exclude_paths:
+  - .git/
+  - .venv/
+  - terraform/
+  - ansible/inventory/
+skip_list:
+  # We intentionally share variables across roles (single-node app), so role-prefix
+  # naming is not enforced.
+  - var-naming[no-role-prefix]

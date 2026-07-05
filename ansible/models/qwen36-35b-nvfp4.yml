@@ -1,0 +1,26 @@
+---
+# Qwen3.6-35B-A3B in NVFP4 — Blackwell (B200) ONLY. Official NVIDIA ModelOpt checkpoint (~19 GB).
+# MoE NVFP4 backend: let vLLM auto-select (CUTLASS). Do NOT set VLLM_USE_FLASHINFER_MOE_FP4=1 — on this
+# auto-detected (no --quantization). --language-model-only drops the vision tower; --enforce-eager
+# guards the hybrid state cache (drop once stable on Blackwell). min_vram_gb=175 pins to B200.
+# Live-validated on B200 2026-07-04 (262144, KV 13.9M tok, 53.02x, 168/183 GiB); llama-swap 2026-07-05.
+model_repo: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+served_name: "qwen3.6-35b-a3b-nvfp4"
+tensor_parallel_size: 1
+max_model_len: 262144
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--language-model-only"
+  - "--trust-remote-code"
+  - "--reasoning-parser"
+  - "qwen3"
+  - "--tool-call-parser"
+  - "qwen3_coder"
+  - "--enable-auto-tool-choice"
+  - "--enforce-eager"
+  - "--kv-cache-dtype"
+  - "fp8"
+min_plan: "GPU-24xCPU-240GB-1xB200"
+min_vram_gb: 175   # B200 reports 179 GB after floor-div (183,359 MiB) — measured live 2026-07-04

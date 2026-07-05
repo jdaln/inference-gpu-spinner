@@ -1,0 +1,10 @@
+---
+# Override with -e if you really intend to run a profile flagged requires_review.
+allow_unvalidated_model: false
+
+# LoRA serving (enable per-model in the model profile). Adapters are picked at request time by
+# putting the adapter name in the OpenAI "model" field. Paths may be HF repo ids or on-box paths.
+enable_lora: false
+max_lora_rank: 16
+max_loras: 4
+lora_modules: []   # e.g. [{ name: "my-adapter", path: "org/my-lora-hf-repo" }]

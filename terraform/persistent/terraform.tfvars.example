@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) only if you want to override defaults.
+# All variables have sensible defaults — an empty terraform.tfvars works fine.
+
+# zone            = "fi-hel2"      # the only zone with GPUs; do not change
+# weights_size_gb = 150            # default; bump to ~500 for GLM-5.2 NVFP4 (~377 GB). LRU cache; bills 24/7
+# weights_tier    = "maxiops"
+# prefix          = "gpu-spinner"

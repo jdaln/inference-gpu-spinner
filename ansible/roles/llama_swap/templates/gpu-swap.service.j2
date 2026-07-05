@@ -1,0 +1,13 @@
+[Unit]
+Description=llama-swap multi-model vLLM proxy (starts/stops vLLM docker backends on demand)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/llama-swap --config {{ compose_dir }}/llama-swap.yaml --listen 127.0.0.1:{{ vllm_port }}
+Restart=on-failure
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

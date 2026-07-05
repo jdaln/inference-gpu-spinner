@@ -1,0 +1,107 @@
+---
+# Multi-model serving. Runs llama-swap as a host service that starts/stops a vLLM docker backend per
+# model on demand (one model in VRAM at a time by default). Caddy fronts it on vllm_port. Only runs
+# when multi_model_enabled (gated in site.yml). Live-validated on H100 2026-07-04 (cached + uncached
+# swap-in, hot A->B handoff) — see docs/gpu-spinner.md (Multi-model serving) and docs/validation.md.
+
+# Turn `swap_profiles` (profile names, from a --swap-profile preset) into `swap_models` entries.
+- name: Resolve swap profiles into a swap_models list
+  ansible.builtin.import_tasks: resolve_models.yml
+
+- name: Require at least one model to serve
+  ansible.builtin.assert:
+    that: (swap_models | default([])) | length > 0
+    fail_msg: >-
+      multi_model_enabled=true but no models resolved. Use --swap-profile <name>
+      (see: bin/spin swap-profiles), or pass swap_profiles=[<profile names>] / a swap_models list.
+
+- name: Validate each swap_models entry has the required keys
+  ansible.builtin.assert:
+    that:
+      - item.name is defined and (item.name | string | length) > 0
+      - item.model_repo is defined and (item.model_repo | string | length) > 0
+      - item.max_model_len is defined
+    fail_msg: "swap_models entry is missing name/model_repo/max_model_len: {{ item }}"
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+
+- name: Download the llama-swap release tarball (checksum-verified)
+  ansible.builtin.get_url:
+    url: "{{ llama_swap_base }}/v{{ llama_swap_version }}/llama-swap_{{ llama_swap_version }}_linux_{{ llama_swap_arch }}.tar.gz"
+    dest: "/tmp/llama-swap_{{ llama_swap_version }}_linux_{{ llama_swap_arch }}.tar.gz"
+    checksum: "{{ ('sha256:' ~ llama_swap_sha256) if (llama_swap_sha256 | length > 0) else omit }}"
+    mode: "0644"
+
+# Versioned install dir + symlink so bumping llama_swap_version actually upgrades the binary
+# (a bare `creates: /usr/local/bin/llama-swap` pinned the first-ever version forever).
+- name: Create the versioned llama-swap install dir
+  ansible.builtin.file:
+    path: "/opt/llama-swap-{{ llama_swap_version }}"
+    state: directory
+    mode: "0755"
+
+- name: Install the llama-swap binary (versioned)
+  ansible.builtin.unarchive:
+    src: "/tmp/llama-swap_{{ llama_swap_version }}_linux_{{ llama_swap_arch }}.tar.gz"
+    dest: "/opt/llama-swap-{{ llama_swap_version }}"
+    remote_src: true
+    include:
+      - llama-swap
+    mode: "0755"
+    creates: "/opt/llama-swap-{{ llama_swap_version }}/llama-swap"
+
+- name: Point /usr/local/bin/llama-swap at the installed version
+  ansible.builtin.file:
+    src: "/opt/llama-swap-{{ llama_swap_version }}/llama-swap"
+    dest: /usr/local/bin/llama-swap
+    state: link
+    force: true
+  notify: Restart gpu-swap
+
+- name: Pre-pull the vLLM image (so the first model request isn't a cold ~30 GB pull)
+  ansible.builtin.command:
+    cmd: "docker pull {{ vllm_image }}"
+  changed_when: false
+
+- name: Require the rendered compose .env (the vllm role writes it; supplies VLLM_API_KEY)
+  ansible.builtin.stat:
+    path: "{{ compose_dir }}/.env"
+  register: swap_envfile
+
+- name: Fail if the compose .env is missing (backends would start unauthenticated)
+  ansible.builtin.assert:
+    that: swap_envfile.stat.exists
+    fail_msg: >-
+      {{ compose_dir }}/.env not found. Run the full site.yml (the vllm role renders it) — llama-swap
+      passes it to each backend via --env-file, which is how the vLLM API key reaches the backend.
+
+- name: Render the llama-swap config
+  ansible.builtin.template:
+    src: llama-swap.yaml.j2
+    dest: "{{ compose_dir }}/llama-swap.yaml"
+    mode: "0600"
+  no_log: true
+  notify: Restart gpu-swap
+
+- name: Install the gpu-swap (llama-swap) systemd unit
+  ansible.builtin.template:
+    src: gpu-swap.service.j2
+    dest: /etc/systemd/system/gpu-swap.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart gpu-swap
+
+- name: Enable and start gpu-swap (llama-swap)
+  ansible.builtin.systemd:
+    name: gpu-swap
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for llama-swap to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ vllm_port }}"
+    timeout: 120

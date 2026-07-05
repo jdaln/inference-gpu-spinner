@@ -1,0 +1,6 @@
+[Unit]
+Description=GPU Spinner idle-watchdog (powers off the box when the GPU is idle)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gpu-spinner-idle-watchdog.sh

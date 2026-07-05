@@ -1,0 +1,19 @@
+---
+# Auto-shutdown SAFETY (default ON). Powers the box OFF at a fixed local time so a server you
+# forgot about stops costing GPU money. It POWERS OFF (stop) — it never destroys; you still run
+# `bin/spin down` manually to tear down for real. This is a *cost* safety ONLY on providers that
+# don't bill stopped servers — VERIFIED for UpCloud (GPU-servers FAQ: "you are not billed for the
+# server itself when it is stopped") and NOT assumed for any other provider.
+auto_shutdown_enabled: true
+auto_shutdown_time: "21:00"          # HH:MM, in auto_shutdown_timezone
+auto_shutdown_timezone: "Europe/Zurich"
+
+# Whether the target provider bills stopped servers. UpCloud does NOT (so power-off saves money).
+# If true, power-off saves nothing and you should rely on `bin/spin down` (destroy) instead.
+provider_bills_stopped_servers: false
+
+# Optional idle-based watchdog (separate, opt-in). Powers off after sustained GPU inactivity.
+autostop_idle_enabled: false
+autostop_idle_minutes: 30
+autostop_check_interval_minutes: 5
+autostop_gpu_util_threshold: 5

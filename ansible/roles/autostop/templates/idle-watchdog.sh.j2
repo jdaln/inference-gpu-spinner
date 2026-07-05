@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Rendered by Ansible. Powers off the box after sustained GPU inactivity. Per UpCloud's FAQ f.ex., a
+# stopped GPU server isn't billed for the GPU, so poweroff cuts GPU cost — but the clean teardown
+# is still an operator-side `bin/spin down` (tofu destroy; frees the boot disk + keeps state).
+set -euo pipefail
+
+THRESHOLD={{ autostop_gpu_util_threshold }}
+IDLE_TICKS_REQUIRED={{ (((autostop_idle_minutes | int) + (autostop_check_interval_minutes | int) - 1) // (autostop_check_interval_minutes | int)) }}
+STATE=/run/gpu-spinner-idle.count
+
+# Highest GPU utilisation across all GPUs (percent).
+util="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits | sort -rn | head -1 | tr -d '[:space:]')"
+util="${util:-0}"
+
+count="$(cat "$STATE" 2>/dev/null || echo 0)"
+if [ "$util" -le "$THRESHOLD" ]; then
+  count=$((count + 1))
+else
+  count=0
+fi
+echo "$count" > "$STATE"
+
+logger -t gpu-spinner-autostop "GPU util=${util}% idle_ticks=${count}/${IDLE_TICKS_REQUIRED}"
+
+if [ "$count" -ge "$IDLE_TICKS_REQUIRED" ]; then
+  logger -t gpu-spinner-autostop "Idle threshold reached — powering off."
+  systemctl poweroff
+fi

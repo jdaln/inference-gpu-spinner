@@ -1,0 +1,19 @@
+#cloud-config
+# Minimal first-boot config. The GPU template already has the NVIDIA driver, CUDA,
+# the NVIDIA Container Toolkit and Docker — Ansible does the rest. The only thing
+# we must do here is claim the floating IP at the OS level (UpCloud routes it to the
+# NIC via the API binding, but the kernel won't answer until the address is added).
+write_files:
+  - path: /etc/netplan/99-floating-ip.yaml
+    permissions: "0644"
+    content: |
+      network:
+        version: 2
+        renderer: networkd
+        ethernets:
+          eth0:
+            addresses:
+              - ${floating_ip}/32
+runcmd:
+  - netplan apply
+  - ip addr add ${floating_ip}/32 dev eth0 || true

@@ -1,0 +1,26 @@
+---
+# Gemma 4 31B (Google) — dense, multimodal (image+text) — in FP8.
+# FP8-Dynamic compressed-tensors (~33 GB weights); quant auto-detected (no --quantization).
+# Fits a single L40S 48GB but TIGHT (~43 GB); H100 80GB is comfortable (and allows longer context).
+# --limit-mm-per-prompt image=0 drops the vision tower for text-only serving. Live-validated on a
+# single L40S 2026-07-05 (65536 ctx, KV 105,859 tok, 1.62x, 41.5/46 GiB; soak 6/6). Tight but real.
+model_repo: "RedHatAI/gemma-4-31B-it-FP8-Dynamic"
+served_name: "gemma4-31b-fp8"
+tensor_parallel_size: 1
+max_model_len: 65536
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--limit-mm-per-prompt"
+  - '{"image":0}'
+  - "--enable-auto-tool-choice"
+  - "--reasoning-parser"
+  - "gemma4"
+  - "--tool-call-parser"
+  - "gemma4"
+  # fp8 KV cache REQUIRED to reach 64K on the tight L40S (dense 33GB weights leave a small KV pool).
+  - "--kv-cache-dtype"
+  - "fp8"
+min_plan: "GPU-8xCPU-64GB-1xL40S"
+min_vram_gb: 40

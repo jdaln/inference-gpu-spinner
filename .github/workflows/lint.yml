@@ -1,0 +1,64 @@
+name: lint
+on:
+  push:
+  pull_request:
+
+jobs:
+  tofu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - name: tofu fmt -check
+        run: tofu fmt -check -recursive terraform/
+      - name: tofu validate (persistent)
+        run: |
+          tofu -chdir=terraform/persistent init -backend=false
+          tofu -chdir=terraform/persistent validate
+      - name: tofu validate (upcloud)
+        run: |
+          tofu -chdir=terraform/providers/upcloud init -backend=false
+          tofu -chdir=terraform/providers/upcloud validate
+
+  ansible-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ansible + ansible-lint
+        run: pip install ansible ansible-lint jmespath
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+      - name: ansible-lint
+        run: ansible-lint
+      - name: ansible syntax-check (single + multi-model)
+        run: |
+          ansible-playbook ansible/site.yml --syntax-check -e vllm_model=qwen36 -e sslip_host=example
+          ansible-playbook ansible/site.yml --syntax-check -e vllm_model=qwen36 -e sslip_host=example -e multi_model_enabled=true
+      - name: bin/spin default profile exists + every profile renders
+        run: |
+          default=$(sed -n 's/.*VLLM_MODEL:-\([a-z0-9-]*\).*/\1/p' bin/spin | head -1)
+          echo "bin/spin default profile: $default"
+          test -f "ansible/models/$default.yml" || { echo "::error::bin/spin defaults to missing profile '$default'"; exit 1; }
+          for f in ansible/models/*.yml; do
+            ansible-playbook tests/render-profile.yml -e "profile=$(basename "$f" .yml)" >/dev/null || { echo "::error::profile $f fails to render"; exit 1; }
+            echo "rendered: $f"
+          done
+      - name: every swap preset resolves + renders (llama-swap)
+        run: |
+          for f in ansible/swap-profiles/*.yml; do
+            p=$(basename "$f" .yml)
+            ansible-playbook tests/render-swap-profile.yml -e "preset=$p" >/dev/null || { echo "::error::swap preset $f fails to render"; exit 1; }
+            echo "rendered swap: $f"
+          done
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash syntax check
+        run: bash -n bin/spin
+      - name: shellcheck
+        run: shellcheck bin/spin   # ubuntu-latest ships shellcheck

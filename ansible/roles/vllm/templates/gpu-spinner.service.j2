@@ -1,0 +1,23 @@
+[Unit]
+Description=GPU Spinner (vLLM + Caddy) docker compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory={{ compose_dir }}
+# Images are pre-pulled by Ansible and persist on the /data Docker data-root, so `up -d` just
+# starts the (already-present) containers and returns quickly — it does NOT wait for the model to
+# load or become healthy. The refresh-pull is BEST-EFFORT (leading "-"): on a resume/reboot it can
+# run before DNS is ready, and failing it must NOT abort the unit — `up -d` then starts from the
+# cached images. (Without the "-", a boot-time DNS race left vLLM down after every resume.)
+ExecStartPre=-/usr/bin/docker compose -f {{ compose_dir }}/compose.yml pull --quiet
+ExecStart=/usr/bin/docker compose -f {{ compose_dir }}/compose.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f {{ compose_dir }}/compose.yml down
+# Generous, in case ExecStartPre still has to pull a large image on a fresh boot disk.
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

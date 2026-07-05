@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the GPU Spinner idle-watchdog periodically
+
+[Timer]
+OnBootSec={{ autostop_check_interval_minutes }}min
+OnUnitActiveSec={{ autostop_check_interval_minutes }}min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

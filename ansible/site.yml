@@ -1,0 +1,23 @@
+---
+# Full configuration of the ephemeral GPU box. Run by `bin/spin up`.
+# The UpCloud "Ubuntu with NVIDIA Drivers and CUDA" template already ships the
+# driver/CUDA/Container-Toolkit/Docker, so gpu+docker are verification-only.
+- name: Configure GPU inference box
+  hosts: gpu
+  become: true
+  gather_facts: true
+  roles:
+    - role: gpu
+      tags: [gpu]
+    # Install the auto-shutdown safety early, BEFORE the slow vLLM step, so a forgotten box
+    # self-powers-off even if the vLLM deploy later fails or hangs.
+    - role: autostop
+      tags: [autostop]
+    - role: docker
+      tags: [docker]
+    - role: vllm
+      tags: [vllm]
+    # Multi-model proxy (llama-swap); replaces the single vLLM backend when enabled.
+    - role: llama_swap
+      tags: [llama_swap]
+      when: multi_model_enabled | default(false) | bool

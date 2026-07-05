@@ -1,0 +1,138 @@
+---
+# Auto-shutdown SAFETY. Default ON: a systemd timer powers the box OFF at a fixed local time so a
+# forgotten server stops billing GPU. It powers OFF (stop), never destroys — `bin/spin down` is
+# still how you tear down. COST-saving ONLY where stopped servers aren't billed (verified: UpCloud;
+# see provider_bills_stopped_servers). Configure at deploy time via bin/spin --shutdown-at /
+# --shutdown-tz / --no-shutdown (which set the auto_shutdown_* vars with -e).
+
+- name: Warn if auto-shutdown is on but this provider bills stopped servers
+  ansible.builtin.debug:
+    msg: >-
+      auto_shutdown_enabled is true but provider_bills_stopped_servers is true — powering off will
+      NOT save money here. Use `bin/spin down` (destroy) instead, or pass --no-shutdown.
+  when:
+    - auto_shutdown_enabled | bool
+    - provider_bills_stopped_servers | bool
+
+# ---------- Scheduled daily self-shutdown (the safety) ----------
+- name: Validate the auto-shutdown time + timezone before arming the timer
+  when: auto_shutdown_enabled | bool
+  block:
+    - name: Assert the auto-shutdown time is H:MM / HH:MM
+      ansible.builtin.assert:
+        that: auto_shutdown_time is match('^([01]?[0-9]|2[0-3]):[0-5][0-9]$')
+        fail_msg: "auto_shutdown_time '{{ auto_shutdown_time }}' must be H:MM or HH:MM (00:00–23:59)."
+
+    - name: Check the auto-shutdown timezone exists on the box
+      ansible.builtin.stat:
+        path: "/usr/share/zoneinfo/{{ auto_shutdown_timezone }}"
+      register: autooff_tz
+
+    - name: Assert the timezone is a valid zoneinfo name
+      ansible.builtin.assert:
+        that: autooff_tz.stat.exists
+        fail_msg: >-
+          auto_shutdown_timezone '{{ auto_shutdown_timezone }}' is not a valid zoneinfo name
+          (e.g. Europe/Zurich, UTC). systemd would reject the timer, leaving NO auto power-off.
+
+- name: Install the scheduled self-shutdown service + timer
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: gpu-spinner-autooff.service.j2, dest: gpu-spinner-autooff.service }
+    - { src: gpu-spinner-autooff.timer.j2, dest: gpu-spinner-autooff.timer }
+  when: auto_shutdown_enabled | bool
+
+- name: Enable and start the scheduled self-shutdown timer
+  ansible.builtin.systemd:
+    name: gpu-spinner-autooff.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: auto_shutdown_enabled | bool
+
+# Read-only status query (the systemd module changes state; here we only verify it armed).
+- name: Confirm the self-shutdown timer actually armed (a bad time/TZ would leave it inactive)  # noqa: command-instead-of-module
+  ansible.builtin.command: systemctl is-active gpu-spinner-autooff.timer
+  register: autooff_active
+  changed_when: false
+  failed_when: (autooff_active.stdout | trim) != "active"
+  when: auto_shutdown_enabled | bool
+
+- name: Stop and disable the self-shutdown timer when opted out
+  ansible.builtin.systemd:
+    name: gpu-spinner-autooff.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not (auto_shutdown_enabled | bool)
+
+- name: Remove the self-shutdown units when opted out
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}"
+    state: absent
+  loop:
+    - gpu-spinner-autooff.service
+    - gpu-spinner-autooff.timer
+  when: not (auto_shutdown_enabled | bool)
+
+- name: Reload systemd after removing self-shutdown units
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: not (auto_shutdown_enabled | bool)
+
+# ---------- Optional idle-based watchdog (opt-in) ----------
+- name: Install the idle-watchdog script
+  ansible.builtin.template:
+    src: idle-watchdog.sh.j2
+    dest: /usr/local/bin/gpu-spinner-idle-watchdog.sh
+    mode: "0755"
+  when: autostop_idle_enabled | bool
+
+- name: Install the idle-watchdog service + timer
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: gpu-spinner-autostop.service.j2, dest: gpu-spinner-autostop.service }
+    - { src: gpu-spinner-autostop.timer.j2, dest: gpu-spinner-autostop.timer }
+  when: autostop_idle_enabled | bool
+
+- name: Enable and start the idle-watchdog timer
+  ansible.builtin.systemd:
+    name: gpu-spinner-autostop.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: autostop_idle_enabled | bool
+
+# Opt-out cleanup (mirrors the autooff pattern): without this, flipping the flag back to false on a
+# redeploy would leave a live timer that powers the box off after N idle minutes — a surprise outage.
+- name: Stop and disable the idle-watchdog timer when opted out
+  ansible.builtin.systemd:
+    name: gpu-spinner-autostop.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not (autostop_idle_enabled | bool)
+
+- name: Remove the idle-watchdog units when opted out
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/gpu-spinner-autostop.service
+    - /etc/systemd/system/gpu-spinner-autostop.timer
+    - /usr/local/bin/gpu-spinner-idle-watchdog.sh
+  register: autostop_idle_removed
+  when: not (autostop_idle_enabled | bool)
+
+- name: Reload systemd after removing idle-watchdog units
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - not (autostop_idle_enabled | bool)
+    - autostop_idle_removed is changed

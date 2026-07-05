@@ -1,0 +1,36 @@
+---
+# CI guard: resolve a swap preset (ansible/swap-profiles/<name>.yml) into swap_models and render the
+# llama-swap config template. Catches undefined vars / bad YAML / arg-quoting bugs without a GPU:
+#   ansible-playbook tests/render-swap-profile.yml -e preset=<name>
+# NOTE: validates rendering + resolution only — model flag VALUES are proven by live runs.
+- name: Render a swap preset through the llama-swap template
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    swap_models_dir: "{{ playbook_dir }}/../ansible/models"
+  tasks:
+    - name: Load shared defaults
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../ansible/group_vars/all.yml"
+
+    - name: Load the swap preset
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../ansible/swap-profiles/{{ preset }}.yml"
+
+    - name: Resolve swap_profiles into swap_models
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../ansible/roles/llama_swap/tasks/resolve_models.yml"
+
+    - name: Render the llama-swap config
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../ansible/roles/llama_swap/templates/llama-swap.yaml.j2"
+        dest: "/tmp/render-swap-{{ preset }}.yaml"
+        mode: "0644"
+
+    - name: Rendered config parses as YAML with one entry per model
+      ansible.builtin.assert:
+        that:
+          - rendered.models is defined
+          - (rendered.models | length) == (swap_models | length)
+          - (rendered.models | length) > 0
+        fail_msg: "preset '{{ preset }}' renders invalid llama-swap YAML or a model-count mismatch"
+      vars:
+        rendered: "{{ lookup('ansible.builtin.file', '/tmp/render-swap-' ~ preset ~ '.yaml') | from_yaml }}"
