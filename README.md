@@ -78,6 +78,9 @@ depends on whether the checkpoint is dense or MoE — see below the table.
 | `qwen36-27b-nvfp4`, `gemma4-31b-nvfp4` | (same models, dense) | NVFP4 | B200 | RTX PRO 6000 |
 | `qwen36-35b-nvfp4`, `gemma4-26b-nvfp4` | (same models, MoE) | NVFP4 | B200 | — |
 | `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | 4×B200 | — |
+| `glm53-flash` | GLM-5.3-Flash (321B-A18B MoE, **multimodal**) | FP8 | — (new) | 4×B200 — `requires_review` |
+| `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | — (new) | 8×B200 — `requires_review` |
+| `kimi-k3` | Kimi K3 (93L, 896 experts, **multimodal**) | compressed-tensors | — (new) | **no UpCloud plan fits** |
 | `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | — (new) | 4×B200 — `requires_review` |
 | `deepseek-v41-flash` | DeepSeek-V4.1-Flash (552B + 196B Engram MoE, **multimodal**) | MXFP4+MXFP8 | — (new) | 4×B200 — `requires_review` |
 | `deepseek-v4-pro-0813` | DeepSeek-V4-Pro-0813 (1.6T-A49B MoE) | FP4+FP8 | — (new) | 8×B200 — `requires_review` |
@@ -94,11 +97,28 @@ Profiles declare all of this themselves via `min_compute_capability`,
 `unsupported_compute_capabilities` and `untested_compute_capabilities`. Detail:
 [docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
 
-**Qwen3.8-27B** is the newest generation here and is not yet measured on any tier. It is a dense hybrid-attention model (48 of 64 layers use linear attention) with a 262K native context, a vision tower, and an in-checkpoint MTP draft head. The NVFP4 build runs on RTX PRO 6000 because it is dense — see the profile comments for the measured KV-pool figures behind that choice.
+**Qwen3.8-27B** is the newest generation here and is not yet measured on any tier. It is a dense
+hybrid-attention model (48 of 64 layers use linear attention) with a 262K native context, a vision
+tower, and an in-checkpoint MTP draft head. The NVFP4 build runs on RTX PRO 6000 because it is dense
+— see the profile comments for the measured KV-pool figures behind that choice.
 
-**Qwen3.8-Flash-Next** is a Qwen4 architecture preview: an ultra-sparse MoE with 6B active parameters, a separate 51B N-gram embedding table, and Qwen Sparse Attention. It needs its own container image and four GPUs, and its weights are ~186 GB — raise `WEIGHTS_SIZE_GB` before the first pull. Upstream verified it on 4×H100 with the N-gram table offloaded to host RAM, which is the plan this profile targets.
+**Qwen3.8-Flash-Next** is a Qwen4 architecture preview: an ultra-sparse MoE with 6B active
+parameters, a separate 51B N-gram embedding table, and Qwen Sparse Attention. It needs its own
+container image and four GPUs, and its weights are ~186 GB — raise `WEIGHTS_SIZE_GB` before the
+first pull. Upstream verified it on 4×H100 with the N-gram table offloaded to host RAM, which is the
+plan this profile targets.
 
-**The two DeepSeek flagships are the heaviest profiles here.** `deepseek-v41-flash` needs four B200s (~511 GB of weights, of which 183 GiB is its Engram n-gram memory) and a dated vLLM nightly, because no release serves the architecture yet. `deepseek-v4-pro-0813` needs eight (~893 GB of weights) at roughly €36/h. Both need a much larger `WEIGHTS_SIZE_GB` than the default 150 GB — 600 and 1000 respectively — and that disk bills 24/7 until you remove it. Read the profile comments before either first run.
+**The two DeepSeek flagships are the heaviest profiles here.** `deepseek-v41-flash` needs four B200s
+(~511 GB of weights, of which 183 GiB is its Engram n-gram memory) and a dated vLLM nightly, because
+no release serves the architecture yet. `deepseek-v4-pro-0813` needs eight (~893 GB of weights) at
+roughly €36/h. Both need a much larger `WEIGHTS_SIZE_GB` than the default 150 GB — 600 and 1000
+respectively — and that disk bills 24/7 until you remove it. Read the profile comments before either
+first run.
+
+**Kimi K3 does not fit any UpCloud plan.** Its floor is 8× GB300 (2304 GB) and its weights alone are
+~1561 GB, against ~1538 GB on the largest plan here (8× B200). Its image is also a CUDA 13 build
+needing an r580+ driver. The profile exists so the requirement is recorded and so it works the day a
+large enough tier appears; until then every preflight refuses it.
 
 **The H100 remains a full option** and is the validated tier for `qwen36-35b`. RTX PRO 6000 is
 cheaper today, GPU pricing moves, and the H100 rows have measured numbers behind them.
@@ -106,11 +126,11 @@ cheaper today, GPU pricing moves, and the H100 rows have measured numbers behind
 The "validated tier" column means the profile has a dated live run in
 [docs/validation.md](docs/validation.md) — context, KV pool, concurrency and VRAM. Anything in the
 untested column should work and warns when you deploy it. Treat that run as a validation run and
-record what you measure. Four profiles are gated behind `requires_review` (pass
-`--allow-unvalidated` to run anyway): `glm52` and `deepseek-v4-pro-0813` because an 8×B200 node
-costs ~€36/h to test, `deepseek-v41-flash` because it needs four B200s and a vLLM nightly, and
-`deepseek-v4-flash-vision` because its only published multimodal runs are on hardware UpCloud
-does not offer.
+record what you measure. Seven profiles are gated behind `requires_review` (pass
+`--allow-unvalidated` to run anyway): `glm52`, `glm53` and `deepseek-v4-pro-0813` because an
+8×B200 node costs ~€36/h to test; `glm53-flash`, `deepseek-v41-flash` and
+`deepseek-v4-flash-vision` because they need four B200s and a container image outside the
+shared pin; and `kimi-k3` because no plan here fits it.
 
 All current model repos are **ungated** on Hugging Face, so no `HF_TOKEN` is required (but setting one
 in `.env` avoids the anonymous download throttle). **LoRA** adapter serving and **multi-model swap**
@@ -146,6 +166,22 @@ cache with `--keep-disk` or `DECOMMISSION_ON_DOWN=never`. An on-box timer also p
 at a fixed local time (default 21:00 Europe/Zurich; tune with `--shutdown-at` / `--shutdown-tz` /
 `--no-shutdown`). `bin/spin persistent-destroy --yes` is the only path to €0 standing cost, and is
 irreversible. Full detail: [docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
+
+## Checking a profile before you pay for it
+
+`tests/check-vllm-compat.py` reads vLLM's source at the ref each pinned image corresponds to and
+verifies, for every profile, that the checkpoint's architecture is in that build's model registry,
+that the reasoning and tool-call parsers it names are registered, and that every flag it passes
+exists. It needs no GPU and runs in CI:
+
+```bash
+python3 tests/check-vllm-compat.py            # all profiles
+python3 tests/check-vllm-compat.py qwen38     # just one
+```
+
+Being in the model registry is not the same as being supported: a recipe often states a higher
+version floor than the release that first carried the architecture. Read the recipe, then pin
+accordingly.
 
 ## Other providers
 

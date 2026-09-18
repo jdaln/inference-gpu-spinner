@@ -1,0 +1,54 @@
+---
+# GLM-5.3-Flash (Z.ai) — ~321B total / 18B active multimodal MoE, 45 layers mixing KDA linear
+# attention with NoPE sparse MLA, routing each token through 8 of 288 experts. Image and video
+# input, 1,048,576 native context, one MTP draft layer. Native FP8 weights, ~306 GiB.
+#
+# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+#
+# PINNED IMAGE (required): Glm5NextForConditionalGeneration is in neither v0.23.0 nor v0.29.0 —
+# the recipe says to use Docker until the integration reaches the public repo. The dedicated
+# vllm/vllm-openai:glm53-flash image is what this profile pins. That build also satisfies the
+# FlashInfer 0.6.17 floor that NoPE sparse MLA needs.
+#
+# 4x B200. The recipe's verified configuration is TP4 on one GB200 tray (768 GB), which 4x B200
+# matches — ~18 EUR/h, hence requires_review. Hopper is supported by the implementation but CANNOT
+# use an FP8 KV cache for this model and must run BF16 KV, so min_compute_capability pins the
+# Blackwell path that the flags below assume.
+#
+# MTP: one draft layer is in the checkpoint and the recipe's TP4 command enables it with 5 tokens.
+# Left OFF so the first validation run tests the model alone. Enable with:
+#   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":5}']
+#
+# Vision is left ON: unlike the Qwen profiles here there is no --language-model-only equivalent in
+# the recipe's command, and the model's multimodal path is part of what it is for. Serving is
+# text-first either way; images just work if a client sends them.
+#
+# DISK: ~328 GB of weights. Set WEIGHTS_SIZE_GB to at least 400 and re-run
+# bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 88/mo standing.
+#
+# An NVFP4 build exists (RedHatAI/GLM-5.3-Flash-NVFP4, ~198 GB) with 4-bit MoE experts and is not
+# used here: NVFP4 MoE takes the CUTLASS grouped block-scaled GEMM path that returns invalid output
+# on RTX Blackwell, and on B200 the native FP8 checkpoint is the one the recipe verifies. It would
+# be the checkpoint to try if you wanted this on two B200s instead of four.
+model_repo: "zai-org/GLM-5.3-Flash"
+served_name: "glm53-flash"
+vllm_image_override: "vllm/vllm-openai:glm53-flash"
+tensor_parallel_size: 4
+max_model_len: 1048576
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--reasoning-parser"
+  - "glm47"
+  - "--tool-call-parser"
+  - "glm47"
+  - "--enable-auto-tool-choice"
+min_plan: "GPU-48xCPU-960GB-4xB200"
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~306 GiB of weights across TP=4
+min_compute_capability: 10.0   # FP8 KV cache for this model is Blackwell-only; Hopper needs BF16 KV
+validated: false   # newly added — no live run on this account yet
+requires_review: true
+health_wait_retries: 400   # x10s = 67 min — ~328 GB to pull, then TP=4 init

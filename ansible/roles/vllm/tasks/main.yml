@@ -75,6 +75,19 @@
       {{ tensor_parallel_size | default(1) }} but this server has {{ gpu_count | default('?') }} GPU(s).
       Pick a multi-GPU plan (this profile's floor is {{ min_plan | default('a multi-GPU plan') }}).
 
+# Some images are built against a newer CUDA than the shared pin and need a newer driver on the
+# host. The UpCloud template's driver is whatever it ships, so check it before the container starts
+# and fails with a CUDA error that does not name the real cause.
+- name: Preflight — the host driver is new enough for this profile's image
+  ansible.builtin.assert:
+    that:
+      - (gpu_driver_major is not defined) or (allow_unvalidated_model | default(false) | bool) or
+        ((gpu_driver_major | int) >= (min_driver_major | default(0) | int))
+    fail_msg: >-
+      Model '{{ vllm_model }}' needs NVIDIA driver {{ min_driver_major | default('?') }} or newer
+      (its image is a newer CUDA build), but this host reports {{ gpu_driver_major | default('?') }}.
+      The UpCloud GPU template decides the driver, so this needs a template that ships a newer one.
+
 # Untested and unsupported are separate states. A new model, or a known model on a GPU it has not
 # been measured on, deploys normally but prints a warning, so the operator knows the run is evidence
 # to record in docs/validation.md. Unsupported combinations fail the asserts above instead.

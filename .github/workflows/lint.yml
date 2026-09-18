@@ -54,6 +54,17 @@ jobs:
             echo "rendered swap: $f"
           done
 
+  vllm-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: every profile matches the vLLM build its image pins
+        # Reads vLLM's source at the ref each pinned image corresponds to and checks the
+        # checkpoint's architecture, the named parsers and every CLI flag. Catches the mistakes
+        # the render tests cannot: a flag that does not exist, a parser that is not registered,
+        # or an architecture the pinned release predates.
+        run: python3 tests/check-vllm-compat.py
+
   shell:
     runs-on: ubuntu-latest
     steps:

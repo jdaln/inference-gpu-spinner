@@ -1,0 +1,51 @@
+---
+# GLM-5.3 (Z.ai) — ~743B total / 39B active MoE, text-only, 1M native context, 5-token MTP.
+# Architecture and serving flags are identical to GLM-5.2 (glm52.yml here); the packaging changed,
+# and the default zai-org/GLM-5.3 checkpoint is now NATIVE FP8 rather than a separate build. BF16
+# lives under zai-org/GLM-5.3-BF16. ~756 GB of weights.
+#
+# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+#
+# PINNED IMAGE. The architecture (GlmMoeDsaForCausalLM) is already in the shared v0.23.0 pin, but
+# the recipe's floor for THIS model is vLLM 0.28.0 — being in the model registry is not the same as
+# being supported. v0.29.0 is the newest release and is what this profile uses.
+#
+# 8x B200. The recipe's single-node options are 8x H200 or 8x H20 (141 GB each) for FP8, and 8x B200
+# (180 GB each) to reach the full 1M context with an FP8 KV cache. UpCloud has neither H200 nor H20,
+# so 8x B200 is the plan — ~36 EUR/h, the same tier as glm52, hence requires_review. Note that
+# 8x H100 would be 640 GB against ~756 GB of weights, and 8x RTX PRO 6000 768 GB with nothing left
+# for KV and no NVLink; min_vram_gb keeps both out.
+#
+# MTP: the checkpoint carries a 5-token MTP draft. Left OFF so the first validation run tests the
+# model alone — at this hourly rate a failure that could be either half is expensive. Enable with:
+#   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":5}']
+#
+# DISK: ~756 GB of weights. Set WEIGHTS_SIZE_GB to at least 800 and re-run
+# bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 176/mo standing, billed
+# whether or not a GPU exists. Either budget for it or let bin/spin down remove the disk each
+# evening and accept a fresh ~100 min pull.
+#
+# An NVFP4 checkpoint exists (Inferact/GLM-5.3-NVFP4) and is not used here: NVFP4 MoE takes the
+# CUTLASS grouped block-scaled GEMM path, which is the one that misbehaves on RTX Blackwell, and on
+# B200 the native FP8 build is the one the recipe verifies.
+model_repo: "zai-org/GLM-5.3"
+served_name: "glm53"
+vllm_image_override: "vllm/vllm-openai:v0.29.0-cu129-ubuntu2404"
+tensor_parallel_size: 8
+max_model_len: 1048576
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--reasoning-parser"
+  - "glm47"
+  - "--tool-call-parser"
+  - "glm47"
+  - "--enable-auto-tool-choice"
+min_plan: "GPU-96xCPU-1920GB-8xB200"
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~756 GB of weights across TP=8
+validated: false   # newly added — no live run on this account yet
+requires_review: true
+health_wait_retries: 800   # x10s = 133 min — ~756 GB to pull, then TP=8 init across eight GPUs
