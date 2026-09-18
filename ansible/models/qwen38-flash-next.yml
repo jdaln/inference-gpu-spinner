@@ -1,0 +1,77 @@
+---
+# Qwen3.8-Flash-Next in FP8 (official Qwen block-scaled build, ~186 GB on disk / 172.78 GiB loaded).
+# Qwen4 architecture preview: ultra-sparse MoE, 125B parameters with 6B activated per token, plus a
+# separate 51B N-gram embedding table and a 4B MTP head. 48 layers laid out as
+# 12 x (3 x (Gated DeltaNet -> MoE) -> 1 x (Qwen Sparse Attention -> MoE)), 512 experts with 10
+# routed + 1 shared active. Native 262,144 context, extensible to 1M with YaRN. Multimodal.
+#
+# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+#
+# PINNED IMAGE (required): the recipe states plainly that PyPI installation is not supported for
+# this model and that the dedicated vllm/vllm-openai:qwen38-flash-next build must be used. The
+# shared image pin does not carry the qwen4_exp architecture.
+#
+# WHY 4x H100. This is the configuration recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next verified with
+# measured throughput (~1,430 output tok/s at concurrency 64, 1024-in/256-out), and UpCloud sells it
+# as GPU-48xCPU-960GB-4xH100. Two flags come with that hardware and are set below:
+#   VLLM_PLE_CPU_OFFLOAD=1  — 80 GB-class GPUs cannot hold the 51B N-gram embedding table on top of
+#                             the weights, so it lives in host RAM and rows are prefetched
+#                             asynchronously. The plan has 960 GB of RAM against the ~51 GB needed.
+#                             Optional on H200 and above; required on H100.
+#   --moe-backend triton    — the Hopper MoE backend. On Blackwell drop this and the offload env
+#                             above; both are H100 accommodations, not model requirements.
+#
+# OTHER TOPOLOGIES. TP2 is the minimum validated FP8 deployment (on GB300) and TP4 the recommended
+# full tray. On eight GPUs use TEP8 (TP8 plus --enable-expert-parallel): plain TP8 is INCOMPATIBLE
+# with this checkpoint's 128-wide quantization blocks. --enable-expert-parallel improves throughput
+# on TP4 as well and can be added here.
+#
+# MTP: the checkpoint carries a Multi-Token Prediction head, and it is left OFF deliberately rather
+# than just conservatively — on this exact 4x H100 hardware the recipe measured it making throughput
+# WORSE at every concurrency tested (8-36% lower request throughput, 32-173% higher per-token
+# latency, ~36% acceptance). It may help on other hardware; verify before enabling with:
+#   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":3}']
+#
+# --max-num-seqs 256 is not a tuning knob here: lowering it triggers a Mamba-cache capacity error at
+# startup. --gpu-memory-utilization 0.85 is the verified H100 value; the recipe's general advice for
+# large multimodal batches is 0.90, so raise it only with headroom to spare.
+# --tool-call-parser is qwen3_coder for this model, NOT the qwen3_xml that Qwen3.8-27B uses.
+# --reasoning-parser qwen3 is required: the chat template opens every assistant turn with <think>.
+#
+# max_model_len 262144 is the checkpoint's native limit. Startup and bounded evaluation were
+# validated there, but a single full-length 262K request was not tested upstream.
+#
+# DISK: ~186 GB of weights against a default 150 GB /data. Raise WEIGHTS_SIZE_GB (e.g. 300) and
+# re-run bin/spin persistent-init before the first pull, or the download dies part-way with
+# "No space left on device".
+#
+# An NVFP4 build exists (nvidia/Qwen3.8-Flash-Next-NVFP4, ~133 GB) and is not offered here: the
+# recipe covers only FP8 and BF16, the dedicated image has no published NVFP4 run for this
+# architecture, and NVFP4 MoE would be B200-only anyway (see the NVFP4 MoE profiles).
+model_repo: "Qwen/Qwen3.8-Flash-Next-FP8"
+served_name: "qwen3.8-flash-next"
+vllm_image_override: "vllm/vllm-openai:qwen38-flash-next"
+tensor_parallel_size: 4
+max_model_len: 262144
+gpu_memory_utilization: 0.85
+dtype: "auto"
+enable_lora: false
+extra_env:
+  VLLM_PLE_CPU_OFFLOAD: 1
+extra_vllm_args:
+  - "--moe-backend"
+  - "triton"
+  - "--max-num-seqs=256"
+  - "--enable-prefix-caching"
+  - "--no-enable-flashinfer-autotune"
+  - "--reasoning-parser"
+  - "qwen3"
+  - "--tool-call-parser"
+  - "qwen3_coder"
+  - "--enable-auto-tool-choice"
+min_plan: "GPU-48xCPU-960GB-4xH100"
+min_vram_gb: 76                  # per-GPU floor: ~43 GiB of weights per rank at TP=4, plus KV
+validated: false                 # newly added — no live run on this account yet
+untested_compute_capabilities: [12.0]   # 4x RTX PRO 6000 also clears the gates; drop --moe-backend
+                                        # triton and the PLE offload there, and note it has no NVLink
+health_wait_retries: 200         # x10s = 33 min — ~186 GB download, TP=4 init, N-gram table offload

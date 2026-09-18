@@ -69,6 +69,9 @@ depends on whether the checkpoint is dense or MoE — see below the table.
 | Profile | Model | Quant | Validated tier | Also runs on (untested) |
 |---|---|---|---|---|
 | `qwen36` (default) | Qwen3.6-27B | FP8 | L40S | RTX PRO 6000, H100 |
+| `qwen38` | Qwen3.8-27B | FP8 | — (new) | L40S, RTX PRO 6000, H100 |
+| `qwen38-nvfp4` | Qwen3.8-27B | NVFP4 | — (new) | RTX PRO 6000, B200 |
+| `qwen38-flash-next` | Qwen3.8-Flash-Next (125B-A6B MoE + 51B N-gram) | FP8 | — (new) | 4×H100, 4×B200 |
 | `gemma4-26b` | Gemma 4 26B-A4B (MoE) | FP8 | L40S | RTX PRO 6000, H100 |
 | `gemma4-31b` | Gemma 4 31B | FP8 | L40S | RTX PRO 6000, H100 |
 | `qwen36-35b` | Qwen3.6-35B-A3B (MoE) | FP8 | **H100** | RTX PRO 6000 |
@@ -88,6 +91,10 @@ invalid output on cc 12.0 with a cu129 build, so the deploy refuses before any w
 Profiles declare all of this themselves via `min_compute_capability`,
 `unsupported_compute_capabilities` and `untested_compute_capabilities`. Detail:
 [docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
+
+**Qwen3.8-27B** is the newest generation here and is not yet measured on any tier. It is a dense hybrid-attention model (48 of 64 layers use linear attention) with a 262K native context, a vision tower, and an in-checkpoint MTP draft head. The NVFP4 build runs on RTX PRO 6000 because it is dense — see the profile comments for the measured KV-pool figures behind that choice.
+
+**Qwen3.8-Flash-Next** is a Qwen4 architecture preview: an ultra-sparse MoE with 6B active parameters, a separate 51B N-gram embedding table, and Qwen Sparse Attention. It needs its own container image and four GPUs, and its weights are ~186 GB — raise `WEIGHTS_SIZE_GB` before the first pull. Upstream verified it on 4×H100 with the N-gram table offloaded to host RAM, which is the plan this profile targets.
 
 **The H100 remains a full option** and is the validated tier for `qwen36-35b`. RTX PRO 6000 is
 cheaper today, GPU pricing moves, and the H100 rows have measured numbers behind them.

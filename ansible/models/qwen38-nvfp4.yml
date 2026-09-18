@@ -1,0 +1,60 @@
+---
+# Qwen3.8-27B in NVFP4 — Blackwell-class GPUs (RTX PRO 6000 or B200). ~22 GB weights.
+# Same dense hybrid backbone as qwen38.yml (64 layers, 48 of them linear attention), native 262,144
+# context. Quantization is auto-detected (no --quantization flag).
+#
+# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+#
+# CHECKPOINT CHOICE. The other NVFP4 profiles here use nvidia/ ModelOpt builds; this one uses
+# unsloth/, which is the build the vLLM recipe verified on consumer Blackwell (sm120) and which
+# leaves far more room for KV. Measured at 262,144 context on RTX 5090 (TP2), from
+# recipes.vllm.ai/Qwen/Qwen3.8-27B:
+#     build                    KV tokens   weights/GPU   MTP acceptance
+#     Qwen FP8                   377,456     14.28 GiB   0.771
+#     Inferact NVFP4             445,875     12.02 GiB   0.897
+#     unsloth NVFP4              920,517     10.64 GiB   0.788
+# unsloth is mixed-precision (FP8 channel-wise alongside the 4-bit groups), which is why its KV pool
+# is roughly double; the uniform-W4A4 Inferact build drafts better. Both serve correctly.
+# nvidia/Qwen3.8-27B-NVFP4 also exists (ModelOpt v0.48.0, mixed NVFP4/FP8) but has no published
+# sm120 run — swap model_repo if you would rather stay on the ModelOpt line.
+#
+# RUNS ON RTX PRO 6000, unlike the NVFP4 *MoE* profiles here. This model is DENSE, so it uses the
+# NVFP4 scaled-mm path: vLLM selects FlashInferCutlassNvFp4LinearKernel on sm120, a real CUTLASS
+# kernel rather than an emulation fallback. The grouped block-scaled GEMM that breaks NVFP4 MoE on
+# cc 12.0 is not on this path. vLLM also auto-disables DeepGemm for model_type qwen3_5_text on
+# Blackwell and falls back to CUTLASS, so no VLLM_USE_DEEP_GEMM=0 workaround is needed.
+#
+# No --enforce-eager: the recipe needed it only on a single 31.4 GiB RTX 5090, where ~22 GB of
+# weights left nothing for CUDA graph capture. A 96 GB RTX PRO 6000 or a 179 GB B200 has ample room.
+# Add it back if a smaller card ever appears, since capture allocates outside the
+# --gpu-memory-utilization budget and OOMs there regardless of how that fraction is set.
+#
+# --reasoning-parser qwen3 is NOT optional (the chat template opens every assistant turn with
+# <think>). --tool-call-parser is qwen3_xml for this generation. --language-model-only drops the
+# vision tower for text-only serving.
+#
+# MTP: the checkpoint carries a Multi-Token Prediction head (measured acceptance 0.788 on this
+# build). Left OFF so the first validation run tests the model alone. Enable with:
+#   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":3}']
+# Unsloth suggests 2 speculative tokens for NVFP4; the recipe measured 3. Read
+# vllm:spec_decode_num_{accepted,draft}_tokens_total to confirm the drafter is actually used.
+model_repo: "unsloth/Qwen3.8-27B-NVFP4"
+served_name: "qwen3.8-27b-nvfp4"
+tensor_parallel_size: 1
+max_model_len: 262144
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--language-model-only"
+  - "--reasoning-parser"
+  - "qwen3"
+  - "--tool-call-parser"
+  - "qwen3_xml"
+  - "--enable-auto-tool-choice"
+  - "--kv-cache-dtype"
+  - "fp8"
+min_plan: "GPU-16xCPU-80GB-1xRTXPRO6000"
+min_vram_gb: 40                  # ~22 GB weights + KV; keeps an L4/L40S-sized card out
+min_compute_capability: 10.0     # NVFP4 needs Blackwell: B200 (cc 10.0) or RTX PRO 6000 (cc 12.0)
+validated: false                 # newly added — no live run on this account yet
