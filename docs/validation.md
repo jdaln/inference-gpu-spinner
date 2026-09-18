@@ -40,7 +40,8 @@ Notes:
   unset, vLLM auto-selects a working (CUTLASS) backend. Cost: two MoE crash-loop rounds on 2026-07-04.
 - **FP8 caches freed for DeepSeek** (2026-07-04): the qwen36/gemma4-31b/qwen36-35b FP8 caches (~96 GB) were
   deleted from `/data` to fit DeepSeek's 157 GB — those FP8 models re-download (~5–10 min) on their next spin.
-  All 10 profiles cached simultaneously needs ~400 GB; the disk is 300 GB, so treat `/data` as an LRU cache.
+  All 10 profiles cached simultaneously needs ~400 GB — far more than the default `weights_size_gb`
+  (150 GB), so treat `/data` as an LRU cache.
 - **2026-07-05 spot-check + `requires_review` cleared:** re-ran gemma4-26b & gemma4-31b (L40S) and
   gemma4-26b-nvfp4 & gemma4-31b-nvfp4 (B200) live — numbers match the rows above **exactly**, soak 6/6 with
   fabrication traps declined; qwen36-27b-nvfp4 & qwen36-35b-nvfp4 re-served via llama-swap ("swap ok").
@@ -96,7 +97,8 @@ see the runbook) · Ansible pre-model ≈ 2 min (image is cached on /data, no pu
 | `glm52-nvfp4` (4×B200, **18 €/h**) | 447 GB ≈ 60 min + **457 s engine init** (+1 warmup restart) → **~90 min** | **~18–20 min** | **~27 € cold / ~6 € warm** |
 
 \* provision→serving→teardown, no usage time. Warm = weights already on `/data` (they persist across
-teardowns; the disk is a 500 GB LRU cache — check `du -sh /data/hf-cache/hub/models--*` before assuming).
+teardowns; `/data` is an LRU cache sized by `weights_size_gb`, 150 GB by default — check
+`du -sh /data/hf-cache/hub/models--*` before assuming).
 
 Session discipline for the expensive tiers:
 - The health-wait is sized per profile (`health_wait_retries`, ×10 s): GLM 25 min, DeepSeek/35B 20 min,
@@ -108,12 +110,12 @@ Session discipline for the expensive tiers:
 
 ## Operational notes
 
-- **/data fills up:** the 150 GB disk hit 100% on 2026-07-04 (Docker image ~23 G + qwen36 29 G +
+- **/data fills up:** a default-sized 150 GB disk hit 100% on 2026-07-04 (Docker image ~23 G + qwen36 29 G +
   gemma-31b 32 G + gemma-26b 27 G + qwen36-35b 35 G + misc) — an uncached download then fails with
   `No space left on device` deep inside the HF downloader. Freed by deleting re-downloadable caches
-  (`/data/hf-cache/hub/models--…`; removed gemma-26b + the stale pruned Qwen3-8B). If you want ALL
-  profiles cached simultaneously, grow `weights_size_gb` (persistent stack) to ~250 and re-run
-  `bin/spin persistent-init`.
+  (`/data/hf-cache/hub/models--…`; removed gemma-26b + the stale pruned Qwen3-8B). To keep the FP8 set
+  cached simultaneously, grow `weights_size_gb` (persistent stack) to ~250 and re-run
+  `bin/spin persistent-init`; all 10 profiles at once need ~400 GB.
 
 - **Multi-GPU cold-start exceeds the health-wait:** GLM-5.2 on 4×B200 took ~18 min to serve (447 GB
   weight load + 457 s engine init/compile + 1 warmup restart) — Ansible's 15-min health-wait expires

@@ -1,6 +1,6 @@
 ---
 # Thin entrypoint: (re)deploy only the vLLM + Caddy stack.
-#   ansible-playbook ansible/vllm.yml -e vllm_model=qwen3 -e sslip_host=1-2-3-4.sslip.io
+#   ansible-playbook ansible/vllm.yml -e vllm_model=qwen36 -e sslip_host=1-2-3-4.sslip.io
 - name: Deploy vLLM + Caddy
   hosts: gpu
   become: true

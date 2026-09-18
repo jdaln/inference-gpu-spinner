@@ -4,6 +4,9 @@ Spin up a cloud GPU in the morning, serve an LLM via **vLLM** (OpenAI-compatible
 (automatic HTTPS), and tear it down at night — so you pay only for the hours you use. First provider:
 **UpCloud**. Built on **OpenTofu + Ansible**.
 
+**New here? Start with [docs/getting-started.md](docs/getting-started.md)** — a step-by-step
+walkthrough from a fresh clone to a served model and back down.
+
 ## How it works
 
 - **Persistent stack** (`terraform/persistent/`) — a data disk (cached weights + Docker image + TLS
@@ -19,18 +22,20 @@ Architecture, security model, and the full cost breakdown: **[docs/gpu-spinner.m
 
 ## Prerequisites
 
-- [OpenTofu](https://opentofu.org) ≥ 1.7, Ansible ≥ 10, `curl`, `jq` (optionally `upctl`).
-- An UpCloud account + API token (`ucat_…`).
+- [OpenTofu](https://opentofu.org) ≥ 1.7, Ansible ≥ 10, `curl`, `jq`, `ssh` (optionally `upctl`).
+- An UpCloud account + API token.
 - `python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt`
 - `ansible-galaxy collection install -r requirements.yml`
 
 ## Setup
 
-1. `cp .env.example .env` and fill in `UPCLOUD_TOKEN`, `ACME_EMAIL` (a **real** address — Let's
-   Encrypt rejects placeholder domains), and `VLLM_API_KEY`. If your egress IP rotates (VPN/NAT),
-   set `OPERATOR_CIDRS` to your covering range(s) so the firewall doesn't lock you out.
-2. Put the GPU OS template and your SSH key in `terraform/providers/upcloud/terraform.tfvars`
-   (copy from the `.example`). Find the template with `upctl storage list --public --template`.
+1. `cp .env.example .env` — fill in `UPCLOUD_TOKEN`, `ACME_EMAIL` (a **real** address; Let's Encrypt
+   rejects placeholder domains) and `VLLM_API_KEY`.
+2. `cp terraform/providers/upcloud/terraform.tfvars.example terraform/providers/upcloud/terraform.tfvars`
+   — set `os_template` and `ssh_public_keys`.
+
+Each variable, and what to set when your egress IP rotates, is covered in
+[docs/getting-started.md](docs/getting-started.md).
 
 ## Use
 
@@ -42,11 +47,12 @@ bin/spin up --swap-profile b200-nvfp4 --plan GPU-24xCPU-240GB-1xB200   # several
 bin/spin status         # GPU + service status
 bin/spin validate       # capture context/KV/VRAM/test-gen evidence
 bin/spin soak           # answer-quality + concurrent-load check
-bin/spin down           # destroy the GPU (keeps disk + IP) — stops the bill
+bin/spin down           # destroy the GPU (keeps the IP) — stops the compute bill
 ```
 
 Endpoint: `https://<floating-ip-dashed>.sslip.io/v1` — locked to your IP by the firewall and gated
-by the vLLM API key.
+by the vLLM API key. The `model` field takes the **served name**, not the profile name (`qwen36`
+serves `qwen3.6-27b-fp8`); `bin/spin up` prints it, and `/v1/models` is authoritative.
 
 ```bash
 curl https://<host>.sslip.io/v1/chat/completions \
@@ -71,7 +77,7 @@ L40S/H100; the **NVFP4** variants are **Blackwell/B200-only** (~2× smaller + fa
 | `glm52` | GLM-5.2 | FP8 | 8×B200 — `requires_review` (kept gated: ~36 €/h to test) |
 
 All profiles are live-validated except `glm52` FP8, which stays behind `requires_review` because an
-8×B200 node is too costly to test (pass `-e allow_unvalidated_model=true` to run it anyway). The exact,
+8×B200 node is too costly to test (pass `--allow-unvalidated` to run it anyway). The exact,
 dated matrix — context, KV pool, concurrency, VRAM — is the system of record:
 **[docs/validation.md](docs/validation.md)**.
 
@@ -94,22 +100,19 @@ Presets live in `ansible/swap-profiles/` (just a list of model names). Details:
 
 ## Cost
 
-L40S ≈ **€1.11/h** while running (H100 €1.79, B200 €4.50; spot tiers ~25 % cheaper). `bin/spin down`
-destroys the GPU so an off day is **€0 GPU**. The persistent disk + floating IP keep billing between
-sessions — at the default 150 GB MaxIOPS disk that's **~€37/mo** (set `WEIGHTS_SIZE_GB` to resize).
-Full cost model + per-session measured costs: [docs/gpu-spinner.md](docs/gpu-spinner.md#cost) and
-[docs/validation.md](docs/validation.md). **Always `bin/spin down` when done.**
+Compute bills only while the GPU server exists (L40S ≈ €1.11/h, up to €36/h for an 8×B200 node);
+the persistent disk and floating IP bill 24/7 whether or not a GPU exists (≈ €37/mo at the default
+150 GB MaxIOPS disk). Rates per tier, disk sizing, and measured per-session costs:
+[docs/gpu-spinner.md](docs/gpu-spinner.md#cost) and [docs/validation.md](docs/validation.md).
 
 ## Winding down & safety
 
-`bin/spin down` is the daily cost saver (destroys the GPU). By default it also **auto-decommissions**
-the weights disk when it's ≥ 150 GB (`DECOMMISSION_THRESHOLD_GB`) to stop the standing cost — it warns
-first and keeps the floating IP (next `bin/spin up` recreates the disk + re-downloads). Keep it warm
-with `bin/spin down --keep-disk` or `DECOMMISSION_ON_DOWN=never`. A systemd **auto-shutdown**
-timer also powers the box off at a fixed local time (default 21:00 Europe/Zurich) so a forgotten server
-stops billing; tune with `--shutdown-at HH:MM` / `--shutdown-tz` / `--no-shutdown`. Full decommission
-to €0 standing — `bin/spin persistent-destroy --yes` (deletes the disk + releases the IP; irreversible)
-— and disk sizing (`WEIGHTS_SIZE_GB`) are covered in [docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
+`bin/spin down` destroys the GPU — the daily cost saver — and **by default also deletes the weights
+disk** (any disk ≥ `DECOMMISSION_THRESHOLD_GB`, default 150) to stop its standing cost; keep the
+cache with `--keep-disk` or `DECOMMISSION_ON_DOWN=never`. An on-box timer also powers the server off
+at a fixed local time (default 21:00 Europe/Zurich; tune with `--shutdown-at` / `--shutdown-tz` /
+`--no-shutdown`). `bin/spin persistent-destroy --yes` is the only path to €0 standing cost, and is
+irreversible. Full detail: [docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
 
 ## Other providers
 

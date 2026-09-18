@@ -18,9 +18,10 @@
   ansible.builtin.assert:
     that: not (requires_review | default(false) | bool) or (allow_unvalidated_model | default(false) | bool)
     fail_msg: >-
-      Model profile '{{ vllm_model }}' is marked requires_review — it needs a larger,
-      multi-GPU plan and will not fit the default L4. Choose an appropriate --plan and
-      re-run with -e allow_unvalidated_model=true.
+      Model profile '{{ vllm_model }}' is marked requires_review — its floor is
+      {{ min_plan | default('a multi-GPU plan') }}, larger than the default
+      GPU-8xCPU-64GB-1xL40S. Choose an appropriate --plan and re-run with
+      --allow-unvalidated (or -e allow_unvalidated_model=true).
 
 - name: Preflight — this GPU has enough VRAM for the selected model profile
   ansible.builtin.assert:

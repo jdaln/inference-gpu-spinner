@@ -52,7 +52,7 @@ variable "operator_cidrs" {
   description = <<-EOT
     Allowlisted source IPs/CIDRs for SSH(22) + HTTPS(443) — IPv4 only; a bare IP is treated
     as /32. Use this when your egress IP rotates: list the covering range(s), e.g.
-    ["155.105.0.0/16", "178.197.0.0/16"]. Takes priority over operator_ip; empty falls back
+    ["198.51.100.0/24", "203.0.113.0/24"]. Takes priority over operator_ip; empty falls back
     to operator_ip, then to auto-detection.
   EOT
   type        = list(string)
