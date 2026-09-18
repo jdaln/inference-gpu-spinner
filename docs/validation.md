@@ -25,7 +25,7 @@ Numbers are vLLM's own startup report (`kv_cache_utils`), `nvidia-smi`, and `/v1
 | `qwen36-35b-nvfp4` | Qwen3.6-35B-A3B (MoE) | NVFP4 | B200 | 262144 | ✅ | 13,897,696 tok | 53.02× | 167,612/183,359 MiB | 2026-07-04 | validate OK — after removing `VLLM_USE_FLASHINFER_MOE_FP4` (see note) |
 | `gemma4-26b-nvfp4` | Gemma 4 26B-A4B (MoE) | NVFP4 | B200 | 262144 | ✅ | 10,641,503 tok | 40.59× | 165,886/183,359 MiB | 2026-07-04 | validate OK — after removing `VLLM_USE_FLASHINFER_MOE_FP4` |
 | `gemma4-31b-nvfp4` | Gemma 4 31B (dense) | NVFP4 | B200 | 262144 | ✅ | 2,415,691 tok | 9.22× | 166,008/183,359 MiB | 2026-07-04 | validate OK |
-| `deepseek-v4-flash` | DeepSeek-V4-Flash (284B-A13B MoE) | NVFP4 | B200 | 262144 | ✅ | 347,227 tok | 1.32× | 170,754/183,359 MiB | 2026-07-04 | **single-B200 TP1 fit CONFIRMED** (157 GB weights); tight — full 256K fits with 1.32×. `requires_review` removed. FP8 build still needs multi-GPU 🚫 |
+| `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, multimodal) | FP4+FP8 | **4×B200** (`…4xB200`, TP=4+EP) | 32768 | ⬜ | — | — | — | — | `requires_review`; ~168 GB of weights, ~202 GB VRAM budget before KV. Needs the pinned `vllm/vllm-openai:deepseekv4-flash-vision` image — the stable wheel routes this checkpoint to the text-only class. Published vision runs exist only on GB200 NVL4 (TP4+EP) and MI350X, neither offered here 🚫 |
 | `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | **4×B200** (`…4xB200`, TP=4+EP) | 786432 | ✅ | 828,160 tok | 1.05× | 170,786/183,359 MiB ×4 | 2026-07-04 | `bin/spin validate` OK; full soak + quality pass — see **“Soak & output-quality checks”** below. ⚠️ 1.05× = single-user at full ctx. 1M ctx does NOT fit (needs 53.9 GiB KV vs 40.8 free; vLLM ceiling 793,216) |
 | `glm52` | GLM-5.2 (753B) | FP8 | 8×B200 node | 1048576 | ⬜ | — | — | — | — | `requires_review`; FP8 ~756 GB needs 8×B200 (36 €/h) — the NVFP4 row above is the validated path at half the price |
 
@@ -35,6 +35,12 @@ Notes:
 - `qwen36` is also expected to run on H100/B200 with far more KV headroom, but only the **L40S** run is verified.
 - Each `max_model_len` is capped at the model's **native** context; beyond that needs YaRN/rope_scaling.
 - **B200 reports 179 GB** usable via nvidia-smi (183,359 MiB) — profile floors use `min_vram_gb: 175`.
+- **RTX PRO 6000 (96 GB GDDR7, compute capability 12.0) has no rows yet.** Every FP8 profile and the
+  two dense NVFP4 profiles list cc 12.0 in `untested_compute_capabilities`: they pass preflight,
+  print an UNTESTED warning and serve. Measure one and add its row. NVFP4 **MoE** profiles list
+  cc 12.0 in `unsupported_compute_capabilities` instead and refuse — the CUTLASS grouped
+  block-scaled GEMM returns invalid output there without a FlashInfer build patched against
+  CUDA 13.0, and vllm-project/vllm#35566 is open.
 - **NVFP4 MoE**: do **not** set `VLLM_USE_FLASHINFER_MOE_FP4=1` on this image — it *forces* the FlashInfer
   path and raises `NotImplementedError: … no FlashInfer NVFP4 MoE backend supports the configuration`;
   unset, vLLM auto-selects a working (CUTLASS) backend. Cost: two MoE crash-loop rounds on 2026-07-04.
@@ -93,7 +99,7 @@ see the runbook) · Ansible pre-model ≈ 2 min (image is cached on /data, no pu
 | `gemma4-31b` / `gemma4-26b` (L40S) | 33/27 GB → **~15 min** (587 s health-wait measured) | ~3–5 min | ~0.3 € |
 | `qwen36-35b` (H100, 1.79 €/h) | 37.5 GB → **~20 min** (904 s health-wait measured) | ~5 min | ~0.7 € |
 | `*-nvfp4` dense/MoE 14–31 GB (1×B200, 4.5 €/h) | → **~10–15 min** | ~3–5 min | ~1 € |
-| `deepseek-v4-flash` (1×B200, 4.5 €/h) | 157 GB ≈ 20 min + load → **~30 min** | ~8–10 min | ~2.5 € |
+| `deepseek-v4-flash-vision` (4×B200, **18 €/h**) | ~168 GB + TP4 init → **not yet measured** | — | — |
 | `glm52-nvfp4` (4×B200, **18 €/h**) | 447 GB ≈ 60 min + **457 s engine init** (+1 warmup restart) → **~90 min** | **~18–20 min** | **~27 € cold / ~6 € warm** |
 
 \* provision→serving→teardown, no usage time. Warm = weights already on `/data` (they persist across

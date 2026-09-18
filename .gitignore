@@ -38,3 +38,5 @@ __pycache__/
 *~
 TODO.txt
 plan.md
+
+.firecrawl/

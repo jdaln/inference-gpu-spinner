@@ -22,5 +22,11 @@ extra_vllm_args:
   - "gemma4"
   - "--kv-cache-dtype"
   - "fp8"
-min_plan: "GPU-24xCPU-240GB-1xB200"
-min_vram_gb: 175   # B200 reports 179 GB after floor-div (183,359 MiB) — measured live 2026-07-04
+min_plan: "GPU-12xCPU-240GB-1xB200"
+min_vram_gb: 40                  # real weight+KV floor; the capability gates below pin the family
+min_compute_capability: 10.0     # NVFP4 needs Blackwell — no L4/L40S/H100
+unsupported_compute_capabilities: [12.0]
+unsupported_reason: >-
+  NVFP4 MoE on RTX Blackwell (cc 12.0) goes through the CUTLASS grouped block-scaled GEMM, which
+  returns invalid output unless FlashInfer is patched and built against CUDA 13.0 (compute_120f);
+  these images are cu129 and vllm-project/vllm#35566 is still open

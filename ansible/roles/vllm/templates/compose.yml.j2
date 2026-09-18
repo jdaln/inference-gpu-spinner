@@ -3,7 +3,9 @@
 services:
 {% if not (multi_model_enabled | default(false) | bool) %}
   vllm:
-    image: {{ vllm_image }}
+    # Profiles may pin their own image (vllm_image_override) when a checkpoint needs a build the
+    # shared pin does not carry yet; everything else uses the validated global pin.
+    image: {{ vllm_image_override | default(vllm_image) }}
     restart: unless-stopped
     ipc: host                       # required by vLLM (shared memory); avoids cryptic CUDA errors
     command:

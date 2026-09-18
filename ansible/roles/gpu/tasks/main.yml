@@ -12,25 +12,37 @@
   ansible.builtin.debug:
     msg: "{{ gpu_nvidia_smi.stdout_lines | select('search', 'NVIDIA') | list }}"
 
-- name: Query GPU model, driver version, and total VRAM (MiB) for preflight checks
-  ansible.builtin.command: nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits
+# compute_cap is what the model-profile preflights gate on: VRAM alone cannot distinguish a
+# 96 GB RTX PRO 6000 (cc 12.0, PCIe, no NVLink) from a 192 GB B200 (cc 10.0), and some kernels
+# are built for one family and not the other. gpu_count drives the multi-GPU (tensor-parallel)
+# checks — nvidia-smi prints one line per GPU.
+- name: Query GPU model, driver version, total VRAM (MiB) and compute capability for preflight checks
+  ansible.builtin.command: nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap --format=csv,noheader,nounits
   register: gpu_query
   changed_when: false
 
-- name: Record GPU facts (model, driver major, per-GPU VRAM in GB)
+- name: Record GPU facts (model, driver major, per-GPU VRAM in GB, compute capability, count)
   ansible.builtin.set_fact:
     gpu_name: "{{ (gpu_query.stdout_lines[0] | split(','))[0] | trim }}"
     gpu_driver_major: "{{ ((gpu_query.stdout_lines[0] | split(','))[1] | trim | regex_search('[0-9]+')) | int }}"
     gpu_total_vram_gb: "{{ (((gpu_query.stdout_lines[0] | split(','))[2] | trim | int) // 1024) | int }}"
+    gpu_compute_cap: "{{ (gpu_query.stdout_lines[0] | split(','))[3] | trim | float }}"
+    gpu_count: "{{ gpu_query.stdout_lines | length }}"
+
+- name: Report the detected GPU topology
+  ansible.builtin.debug:
+    msg: >-
+      {{ gpu_count }}x {{ gpu_name }} — {{ gpu_total_vram_gb }} GB per GPU,
+      compute capability {{ gpu_compute_cap }}, driver {{ gpu_driver_major }}
 
 - name: Require a recent driver on Blackwell-class GPUs (CUDA/vLLM needs >= {{ gpu_min_driver_blackwell }})
   ansible.builtin.assert:
     that: (gpu_driver_major | int) >= (gpu_min_driver_blackwell | int)
     fail_msg: >-
-      {{ gpu_name }} is Blackwell-class but the driver is {{ gpu_driver_major }}
-      (< {{ gpu_min_driver_blackwell }}). The UpCloud GPU template should ship a recent driver;
-      this one is too old for this GPU.
-  when: gpu_name is search('B100') or gpu_name is search('B200') or gpu_name is search('GB200')
+      {{ gpu_name }} is Blackwell-class (compute capability {{ gpu_compute_cap }}) but the driver
+      is {{ gpu_driver_major }} (< {{ gpu_min_driver_blackwell }}). The UpCloud GPU template should
+      ship a recent driver; this one is too old for this GPU.
+  when: (gpu_compute_cap | float) >= (gpu_blackwell_min_compute_cap | float)
 
 - name: Check whether the persistent weights filesystem already exists (re-attach case)
   ansible.builtin.command: "blkid -L {{ weights_fs_label }}"

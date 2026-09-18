@@ -14,7 +14,8 @@ tensor_parallel_size: 1
 #   --max-num-seqs 16            : bound concurrency -> bounded KV/scheduler memory
 #   --enforce-eager              : skip cudagraph capture for headroom + faster start
 # FP8 quantization is auto-detected from the checkpoint config. For more throughput on a
-# larger GPU (e.g. H100 80 GB), drop --enforce-eager and raise max-model-len / batched-tokens.
+# larger GPU (H100 80 GB, or 1x RTX PRO 6000 96 GB at 1.65 EUR/h), drop --enforce-eager and raise
+# max-model-len / batched-tokens — the L40S-specific caps above exist only to fit 48 GB.
 max_model_len: 262144
 gpu_memory_utilization: 0.90
 dtype: "auto"
@@ -31,5 +32,6 @@ extra_vllm_args:
   - "--kv-cache-dtype"
   - "fp8"
 min_plan: "GPU-8xCPU-64GB-1xL40S"
+untested_compute_capabilities: [12.0]   # also fits RTX PRO 6000 / H100; only L40S is measured
 # Preflight floor (GB): an L40S reports ~44 GB. 40 blocks an accidental L4 run (which would OOM).
 min_vram_gb: 40

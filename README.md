@@ -42,8 +42,8 @@ Each variable, and what to set when your egress IP rotates, is covered in
 ```bash
 bin/spin persistent-init                                 # once: create the disk + floating IP
 bin/spin up                                              # default: qwen36 (Qwen3.6-27B FP8) on an L40S
-bin/spin up --model qwen36-35b --plan GPU-12xCPU-240GB-1xH100   # a bigger model on an H100
-bin/spin up --swap-profile b200-nvfp4 --plan GPU-24xCPU-240GB-1xB200   # several models, one endpoint
+bin/spin up --model qwen36-35b --plan GPU-16xCPU-80GB-1xRTXPRO6000  # 96 GB card, all FP8 profiles
+bin/spin up --swap-profile b200-nvfp4 --plan GPU-12xCPU-240GB-1xB200   # several models, one endpoint
 bin/spin status         # GPU + service status
 bin/spin validate       # capture context/KV/VRAM/test-gen evidence
 bin/spin soak           # answer-quality + concurrent-load check
@@ -62,24 +62,43 @@ curl https://<host>.sslip.io/v1/chat/completions \
 
 ## Models
 
-Pick a profile with `--model` (or `-e vllm_model=`); profiles live in `ansible/models/`. FP8 runs on
-L40S/H100; the **NVFP4** variants are **Blackwell/B200-only** (~2× smaller + faster).
+Pick a profile with `--model` (or `-e vllm_model=`); profiles live in `ansible/models/`. FP8 runs
+anywhere from an L40S up; **NVFP4** needs Blackwell (~2× smaller + faster), and *which* Blackwell
+depends on whether the checkpoint is dense or MoE — see below the table.
 
-| Profile | Model | Quant | Tier |
-|---|---|---|---|
-| `qwen36` (default) | Qwen3.6-27B | FP8 | L40S |
-| `gemma4-26b` | Gemma 4 26B-A4B (MoE) | FP8 | L40S |
-| `gemma4-31b` | Gemma 4 31B | FP8 | L40S |
-| `qwen36-35b` | Qwen3.6-35B-A3B (MoE) | FP8 | H100 |
-| `qwen36-27b-nvfp4`, `qwen36-35b-nvfp4`, `gemma4-26b-nvfp4`, `gemma4-31b-nvfp4` | (same models) | NVFP4 | B200 |
-| `deepseek-v4-flash` | DeepSeek-V4-Flash (284B-A13B MoE) | NVFP4 | B200 |
-| `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | 4×B200 |
-| `glm52` | GLM-5.2 | FP8 | 8×B200 — `requires_review` (kept gated: ~36 €/h to test) |
+| Profile | Model | Quant | Validated tier | Also runs on (untested) |
+|---|---|---|---|---|
+| `qwen36` (default) | Qwen3.6-27B | FP8 | L40S | RTX PRO 6000, H100 |
+| `gemma4-26b` | Gemma 4 26B-A4B (MoE) | FP8 | L40S | RTX PRO 6000, H100 |
+| `gemma4-31b` | Gemma 4 31B | FP8 | L40S | RTX PRO 6000, H100 |
+| `qwen36-35b` | Qwen3.6-35B-A3B (MoE) | FP8 | **H100** | RTX PRO 6000 |
+| `qwen36-27b-nvfp4`, `gemma4-31b-nvfp4` | (same models, dense) | NVFP4 | B200 | RTX PRO 6000 |
+| `qwen36-35b-nvfp4`, `gemma4-26b-nvfp4` | (same models, MoE) | NVFP4 | B200 | — |
+| `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | 4×B200 | — |
+| `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | — (new) | 4×B200 — `requires_review` |
+| `glm52` | GLM-5.2 | FP8 | — | 8×B200 — `requires_review` (kept gated: ~36 €/h to test) |
 
-All profiles are live-validated except `glm52` FP8, which stays behind `requires_review` because an
-8×B200 node is too costly to test (pass `--allow-unvalidated` to run it anyway). The exact,
-dated matrix — context, KV pool, concurrency, VRAM — is the system of record:
-**[docs/validation.md](docs/validation.md)**.
+**The RTX PRO 6000 line.** 96 GB, compute capability 12.0. It is Blackwell, but a different family
+from the B200's 10.0. Every FP8 profile runs on it with room to spare, and so does **dense** NVFP4.
+At €1.65/h it is usually the tier with capacity when H100 and B200 are sold out. No profile has been
+measured on it, so those deployments print an untested warning and serve.
+
+**NVFP4 MoE does not run on it.** Those weights use a CUTLASS grouped block-scaled GEMM that returns
+invalid output on cc 12.0 with a cu129 build, so the deploy refuses before any weights download.
+Profiles declare all of this themselves via `min_compute_capability`,
+`unsupported_compute_capabilities` and `untested_compute_capabilities`. Detail:
+[docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
+
+**The H100 remains a full option** and is the validated tier for `qwen36-35b`. RTX PRO 6000 is
+cheaper today, GPU pricing moves, and the H100 rows have measured numbers behind them.
+
+The "validated tier" column means the profile has a dated live run in
+[docs/validation.md](docs/validation.md) — context, KV pool, concurrency and VRAM. Anything in the
+untested column should work and warns when you deploy it. Treat that run as a validation run and
+record what you measure. Two profiles are gated behind
+`requires_review` (pass `--allow-unvalidated` to run anyway): `glm52` FP8 because an 8×B200 node is
+too costly to test, and `deepseek-v4-flash-vision` because it is newly added and its only published
+multimodal runs are on hardware UpCloud does not offer.
 
 All current model repos are **ungated** on Hugging Face, so no `HF_TOKEN` is required (but setting one
 in `.env` avoids the anonymous download throttle). **LoRA** adapter serving and **multi-model swap**
@@ -93,15 +112,17 @@ demand, chosen by the OpenAI `model` field:
 ```bash
 bin/spin swap-profiles                                 # list presets
 bin/spin up --swap-profile l40s --plan GPU-8xCPU-64GB-1xL40S
+bin/spin up --swap-profile rtxpro6000 --plan GPU-16xCPU-80GB-1xRTXPRO6000
 ```
 
-Presets live in `ansible/swap-profiles/` (just a list of model names). Details:
+Presets live in `ansible/swap-profiles/` (just a list of model names): `l40s`, `rtxpro6000` and
+`b200-nvfp4`. Details:
 [docs/gpu-spinner.md](docs/gpu-spinner.md#multi-model-serving-llama-swap).
 
 ## Cost
 
 Compute bills only while the GPU server exists (L40S ≈ €1.11/h, up to €36/h for an 8×B200 node);
-the persistent disk and floating IP bill 24/7 whether or not a GPU exists (≈ €37/mo at the default
+the persistent disk and floating IP bill 24/7 whether or not a GPU exists (≈ €36/mo at the default
 150 GB MaxIOPS disk). Rates per tier, disk sizing, and measured per-session costs:
 [docs/gpu-spinner.md](docs/gpu-spinner.md#cost) and [docs/validation.md](docs/validation.md).
 

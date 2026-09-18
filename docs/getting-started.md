@@ -34,8 +34,8 @@ Understand the two cost buckets before you create anything:
 | Standing | 24 hours a day, GPU or no GPU | persistent disk and floating IP |
 
 The default L40S tier runs at roughly €1.11/hour. The default 150 GB disk plus a floating IP is
-roughly €37/month and keeps billing after `bin/spin down`. Off is cheap, not free. Reaching zero
-takes a deliberate `bin/spin persistent-destroy`, covered in step 7.
+roughly €36/month and keeps billing after `bin/spin down`. Getting to zero takes a separate
+command, `bin/spin persistent-destroy`, covered in step 7.
 
 ## Step 1 — Prepare the control machine
 
@@ -106,15 +106,15 @@ default, and `WEIGHTS_SIZE_GB` in `.env` covers the one you are likely to change
 
 ## Step 4 — Create the persistent layer
 
-Run once, ever:
+Run this once:
 
 ```bash
 bin/spin persistent-init
 ```
 
 This creates the weights disk and the floating IP, and prints the IP. The dashed form of that IP
-becomes your permanent hostname — `<dashed-ip>.sslip.io` — which is what lets the TLS certificate
-survive from one session to the next.
+is your permanent hostname, `<dashed-ip>.sslip.io`. Because the hostname never changes, the TLS
+certificate stored on the disk stays valid across sessions.
 
 Both resources are guarded against a stray `tofu destroy`. The standing bill starts here.
 
@@ -128,6 +128,7 @@ That deploys the default profile, `qwen36`, on an L40S. To pick something else:
 
 ```bash
 bin/spin up --model qwen36-35b --plan GPU-12xCPU-240GB-1xH100
+bin/spin up --model qwen36 --plan GPU-16xCPU-80GB-1xRTXPRO6000
 ```
 
 `up` runs through: create the server and firewall, rebind the floating IP, wait for SSH, then
@@ -139,7 +140,7 @@ The health wait allows 15 minutes by default, and larger profiles raise their ow
 spin-up with the same model and a kept disk is much faster, because the weights and the container
 image are already on `/data`.
 
-Two things are normal rather than broken:
+Two things look like failures but are not:
 
 - **No capacity.** GPU tiers sell out. `up` recognises the refusal and suggests retrying or
   choosing another tier. Nothing was created, and nothing is billing.
@@ -189,23 +190,22 @@ Three levels, in increasing order of what they destroy:
 **It also deletes the weights disk by default.** The rule is to remove any disk at or above
 `DECOMMISSION_THRESHOLD_GB`, which defaults to 150 — the same as the default disk size. So with
 stock settings, a teardown frees the standing cost and the next spin-up re-downloads every model.
-That is the right trade if you spin up rarely. If you work daily, keep the cache:
+That suits occasional use. If you spin up daily, keep the cache:
 
 ```bash
 bin/spin down --keep-disk
 ```
 
-or set `DECOMMISSION_ON_DOWN=never` in `.env` once and forget about it. Either way the floating IP
-is kept, so the hostname and certificate stay valid.
+or set `DECOMMISSION_ON_DOWN=never` in `.env`, which applies to every teardown. Either way the
+floating IP is kept, so the hostname and certificate stay valid.
 
 `bin/spin persistent-destroy --yes` is the only path to zero. It deletes the disk and releases the
 IP, refuses to run while a GPU server still exists, and refuses without `--yes`. It is
 irreversible: you lose the cached weights, the IP and the certificate.
 
-There is also a safety net you did not ask for. Every deploy installs a systemd timer that powers
-the box off at a fixed local time, defaulting to 21:00 `Europe/Zurich`, so a server you forget
-about stops billing. It powers off, never destroys, and `bin/spin start` brings it back. Set your
-own time and zone at deploy time:
+Every deploy also installs a systemd timer that powers the box off at a fixed local time,
+defaulting to 21:00 `Europe/Zurich`, so a forgotten server stops billing. It only powers off, and
+`bin/spin start` brings it back. Set your own time and zone at deploy time:
 
 ```bash
 bin/spin up --shutdown-at 23:30 --shutdown-tz Area/City
@@ -220,12 +220,24 @@ model that takes an hour to load, start early or turn the timer off for that run
 Profiles live in `ansible/models/`, one file per model and quantisation. Pick one with `--model`.
 The README carries the full table; the rules behind it are short:
 
-- FP8 profiles run on L40S and H100.
-- NVFP4 profiles run only on Blackwell hardware, meaning B200. They are roughly half the size and
-  faster, and they will not load anywhere else.
-- Every profile declares the VRAM it needs. A deploy onto too small a plan fails in preflight,
-  before vLLM starts, rather than out-of-memorying on a GPU you are already paying for.
+- FP8 profiles run on any tier from the L40S up.
+- NVFP4 profiles need Blackwell. They are roughly half the size and faster, and they will not load
+  on an L40S or H100 at all.
+- Which Blackwell tier matters. The RTX PRO 6000 (96 GB, €1.65/h) is compute capability 12.0; the
+  B200 (192 GB, €4.50/h) is 10.0. Dense NVFP4 runs on both. NVFP4 **MoE** runs only on the B200: on
+  12.0 its kernels return invalid output, so those profiles refuse to deploy there.
+- Every profile declares the VRAM, GPU generation and GPU count it needs. A deploy onto the wrong
+  plan fails in preflight, before vLLM starts and before any weights download. It will not run out
+  of memory on a GPU you are already paying for.
 - A profile marked `requires_review` needs `--allow-unvalidated` and a large multi-GPU plan.
+
+Each profile also names the tier it has been measured on. Running it elsewhere is allowed and
+prints a warning. Treat that deployment as a validation run: capture `bin/spin validate` and
+`bin/spin soak` and add the row to [validation.md](validation.md).
+
+H100 and B200 both run short of capacity regularly. The RTX PRO 6000 is usually available and covers
+every FP8 profile and the two dense NVFP4 ones. It has no measured runs yet, so expect the untested
+warning. The H100 remains the validated tier for `qwen36-35b`.
 
 To serve several models from one endpoint, use a swap preset. One model sits in VRAM at a time and
 the rest load on demand, so size the box for the largest member of the set, not their sum:
@@ -233,6 +245,7 @@ the rest load on demand, so size the box for the largest member of the set, not 
 ```bash
 bin/spin swap-profiles
 bin/spin up --swap-profile l40s --plan GPU-8xCPU-64GB-1xL40S
+bin/spin up --swap-profile rtxpro6000 --plan GPU-16xCPU-80GB-1xRTXPRO6000
 ```
 
 Presets are just lists of profile names in `ansible/swap-profiles/`; add one by dropping in a file.
@@ -274,7 +287,7 @@ stays empty in multi-model mode. The rest of it, and all of `soak`, work either 
 | A deploy fails at `Wait for vLLM to report healthy`, but the box looks fine | A large model outlasted the health wait. | Poll `https://<dashed-ip>.sslip.io/v1/models` before tearing anything down — the model usually finishes loading. |
 | `404` from a chat completion | Wrong name in the `model` field. | Query `/v1/models` and use exactly what it returns. |
 | `needs ~N GB of VRAM but this GPU reports M GB` | Profile too large for the plan. | Use the plan named in the message, or a larger one. |
-| `No space left on device` during a download | `/data` is full. It is an LRU cache, not unlimited. | Raise `WEIGHTS_SIZE_GB` and re-run `bin/spin persistent-init`, or trim a swap preset. |
+| `No space left on device` during a download | `/data` is full. It is a fixed-size LRU cache. | Raise `WEIGHTS_SIZE_GB` and re-run `bin/spin persistent-init`, or trim a swap preset. |
 | `Unknown model profile 'X'` | Typo, or a profile that does not exist. | List `ansible/models/`. |
 
 If a server ends up in a state Terraform cannot reconcile, `bin/spin status` and the UpCloud

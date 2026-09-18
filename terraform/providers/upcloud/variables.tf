@@ -9,7 +9,7 @@ variable "hostname" {
 }
 
 variable "plan" {
-  description = "UpCloud GPU plan. Default L40S — the smallest tier that fits the current FP8 models (the L4's 24 GB fits none of them). Use --plan for H100 (GPU-12xCPU-240GB-1xH100) or B200 (GPU-24xCPU-240GB-1xB200). Verify with `upctl zone devices fi-hel2`."
+  description = "UpCloud GPU plan. Default L40S — the smallest tier that fits the current FP8 models (the L4's 24 GB fits none of them). Use --plan for RTX PRO 6000 (GPU-16xCPU-80GB-1xRTXPRO6000, 96 GB), H100 (GPU-12xCPU-240GB-1xH100) or B200 (GPU-12xCPU-240GB-1xB200). Identifiers: https://upcloud.com/docs/products/gpu-servers/configurations/"
   type        = string
   default     = "GPU-8xCPU-64GB-1xL40S"
 }

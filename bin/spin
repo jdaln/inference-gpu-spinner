@@ -295,7 +295,8 @@ cmd_up() {
       rm -f "$apply_log"
       die "UpCloud has no '${plan:-GPU-8xCPU-64GB-1xL40S}' capacity in fi-hel2 right now.
     Retry shortly, or try another tier:
-      bin/spin up --model $model --plan GPU-12xCPU-240GB-1xH100   # or ...-1xB200"
+      bin/spin up --model $model --plan GPU-16xCPU-80GB-1xRTXPRO6000   # 96 GB, usually available
+      bin/spin up --model $model --plan GPU-12xCPU-240GB-1xH100        # or ...-1xB200"
     fi
     rm -f "$apply_log"
     die "tofu apply failed (see output above)."

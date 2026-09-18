@@ -17,6 +17,15 @@
       max_model_len: "{{ _profile.max_model_len }}"
       gpu_memory_utilization: "{{ _profile.gpu_memory_utilization | default(gpu_memory_utilization | default(0.90)) }}"
       args: "{{ _profile.extra_vllm_args | default([]) }}"
+      image: "{{ _profile.vllm_image_override | default(vllm_image) }}"
+      # Hardware gates, carried so multi-model mode can preflight each entry the same way
+      # single-model mode preflights its one profile (see the llama_swap role).
+      min_vram_gb: "{{ _profile.min_vram_gb | default(0) }}"
+      min_compute_capability: "{{ _profile.min_compute_capability | default(0) }}"
+      unsupported_compute_capabilities: "{{ _profile.unsupported_compute_capabilities | default([]) }}"
+      untested_compute_capabilities: "{{ _profile.untested_compute_capabilities | default([]) }}"
+      validated: "{{ _profile.validated | default(true) }}"
+      tensor_parallel_size: "{{ _profile.tensor_parallel_size | default(1) }}"
   loop: "{{ swap_profiles | default([]) }}"
   loop_control:
     label: "{{ item }}"

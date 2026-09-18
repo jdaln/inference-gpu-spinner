@@ -1,0 +1,60 @@
+---
+# DeepSeek-V4-Flash-Vision-Exp — DeepSeek's experimental multimodal V4 (285B total / 13B active MoE,
+# 43 layers + a 32-layer ViT and two-layer aligner). Weights are MIXED PRECISION: MoE experts in FP4,
+# attention/norm/router in FP8, vision tower in BF16 — 48 shards, ~168 GB on disk. The vLLM recipe
+# budgets ~202 GB of VRAM before KV cache, so this is a MULTI-GPU profile (TP=4).
+#
+# PINNED IMAGE (required): vision support is not in a stable vLLM release — it lives in
+# vllm-project/vllm#54566. The official wheel routes this checkpoint to the TEXT-ONLY class and fails
+# on the vision tensors, so this profile overrides the shared image pin with the vision build.
+#
+# HARDWARE: B200 only. The experts are FP4 MoE, and the CUTLASS grouped block-scaled GEMM behind
+# NVFP4 MoE returns wrong output on RTX Blackwell (compute capability 12.0) unless FlashInfer is
+# patched and built against CUDA 13.0 (compute_120f); the images here are cu129, and
+# vllm-project/vllm#35566 is still open. Hence unsupported_compute_capabilities: [12.0].
+#
+# requires_review: only NVIDIA GB200 NVL4 (TP4 + expert parallel) and AMD MI350X have a published
+# vision run. UpCloud has neither, so the nearest verified-equivalent topology is 4x B200 with
+# NVLink at ~18 EUR/h — too costly to validate speculatively. 2x B200 (TP=2, 384 GB, ~9 EUR/h) also
+# clears the 202 GB budget and is what the ROCm run used, but has no published NVIDIA run.
+#
+# max_model_len 32768 is the recipe's MEASURED bound, not the checkpoint's advertised 1,048,576 —
+# 1M-token KV needs far more memory than the weights do, so raise this only after checking the KV
+# pool vLLM reports at startup.
+# --allowed-local-media-path is omitted: it is only needed for file:// image URLs, and clients here
+# send http(s):// or base64 data URLs. The chat template needs nothing passed — the repo ships no
+# Jinja template and vLLM resolves --tokenizer-mode deepseek_v4 itself.
+model_repo: "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp"
+served_name: "deepseek-v4-flash-vision"
+vllm_image_override: "vllm/vllm-openai:deepseekv4-flash-vision"
+tensor_parallel_size: 4
+max_model_len: 32768
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--enable-expert-parallel"
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--block-size"
+  - "256"
+  - "--tokenizer-mode"
+  - "deepseek_v4"
+  - "--reasoning-parser"
+  - "deepseek_v4"
+  - "--tool-call-parser"
+  - "deepseek_v4"
+  - "--enable-auto-tool-choice"
+  # DSpark: the draft module is fused into this same checkpoint, so there is no separate draft model.
+  - "--speculative-config"
+  - '{"method":"dspark","model":"deepseek-ai/DeepSeek-V4-Flash-Vision-Exp","num_speculative_tokens":3,"draft_sample_method":"probabilistic","enable_adaptive_verification":true}'
+min_plan: "GPU-48xCPU-960GB-4xB200"
+min_vram_gb: 90    # per-GPU floor: ~202 GB budget across TP=4, plus KV headroom at 32K
+min_compute_capability: 10.0
+unsupported_compute_capabilities: [12.0]
+unsupported_reason: >-
+  its FP4 MoE experts need the CUTLASS grouped block-scaled GEMM, which returns invalid output on
+  RTX Blackwell (cc 12.0) without a FlashInfer build patched against CUDA 13.0
+validated: false     # newly added — no live run on this account yet
+requires_review: true
+health_wait_retries: 150   # x10s = 25 min — ~168 GB of weights plus TP=4 engine init and DSpark setup

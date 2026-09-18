@@ -1,0 +1,17 @@
+---
+# Multi-model swap preset — single RTX PRO 6000 (96 GB GDDR7, compute capability 12.0). Each model
+# loads on demand, one in VRAM at a time (llama-swap starts/stops a vLLM backend per request; an
+# idle one unloads after swap_idle_ttl).
+# Deploy:  bin/spin up --swap-profile rtxpro6000 --plan GPU-16xCPU-80GB-1xRTXPRO6000
+#
+# The 96 GB card holds any one of these comfortably — twice the L40S, and enough headroom to serve
+# the FP8 models without the tight-fit caps they need on a 48 GB L40S. NVFP4 entries here are DENSE
+# checkpoints only: NVFP4 *MoE* goes through a CUTLASS grouped GEMM that returns invalid output on
+# RTX Blackwell, so those profiles stay B200-only (see their unsupported_compute_capabilities).
+swap_profiles:
+  - qwen36             # Qwen3.6-27B FP8 (dense)
+  - gemma4-26b         # Gemma 4 26B-A4B FP8 (MoE — FP8 MoE is fine on this GPU)
+  - gemma4-31b         # Gemma 4 31B FP8 (dense)
+  - qwen36-27b-nvfp4   # Qwen3.6-27B NVFP4 (dense)
+  - gemma4-31b-nvfp4   # Gemma 4 31B NVFP4 (dense)
+# swap_idle_ttl: 1800   # optional override (seconds a backend stays warm after its last request)

@@ -34,6 +34,69 @@
       is {{ min_plan | default('an L40S or larger') }}) or override with -e allow_unvalidated_model=true.
       (Running anyway would OOM at vLLM start on a GPU you are already paying for.)
 
+# VRAM is not enough on its own: an RTX PRO 6000 (96 GB, compute capability 12.0) and a B200
+# (192 GB, cc 10.0) are both Blackwell, but NVFP4 kernels are not equally usable on both. Profiles
+# declare min_compute_capability when they need a GPU generation, and list any capability the
+# kernels are known to mis-handle in unsupported_compute_capabilities.
+- name: Preflight — this GPU generation is new enough for the selected model profile
+  ansible.builtin.assert:
+    that:
+      - (gpu_compute_cap is not defined) or (allow_unvalidated_model | default(false) | bool) or
+        ((gpu_compute_cap | float) >= (min_compute_capability | default(0) | float))
+    fail_msg: >-
+      Model '{{ vllm_model }}' needs compute capability
+      {{ min_compute_capability | default('?') }} or newer, but this GPU
+      ({{ gpu_name | default('?') }}) reports {{ gpu_compute_cap | default('?') }}. Pick a plan with
+      a newer GPU (this profile's floor is {{ min_plan | default('a newer tier') }}) or override with
+      -e allow_unvalidated_model=true.
+
+- name: Preflight — this GPU generation is not on the profile's known-bad list
+  ansible.builtin.assert:
+    that:
+      - (gpu_compute_cap is not defined) or (allow_unvalidated_model | default(false) | bool) or
+        ((gpu_compute_cap | float) not in
+         (unsupported_compute_capabilities | default([]) | map('float') | list))
+    fail_msg: >-
+      Model '{{ vllm_model }}' does not run correctly on compute capability
+      {{ gpu_compute_cap | default('?') }} ({{ gpu_name | default('?') }}) —
+      {{ unsupported_reason | default('its kernels are known to fail or return wrong output on this
+      GPU family') }}. Pick a plan this profile supports (floor:
+      {{ min_plan | default('see the profile') }}) or override with -e allow_unvalidated_model=true.
+
+# tensor_parallel_size larger than the GPU count fails deep inside the engine after the weights
+# have already downloaded; catch it before anything is paid for.
+- name: Preflight — the plan has enough GPUs for this profile's tensor-parallel size
+  ansible.builtin.assert:
+    that:
+      - (gpu_count is not defined) or
+        ((gpu_count | int) >= (tensor_parallel_size | default(1) | int))
+    fail_msg: >-
+      Model '{{ vllm_model }}' runs at tensor-parallel size
+      {{ tensor_parallel_size | default(1) }} but this server has {{ gpu_count | default('?') }} GPU(s).
+      Pick a multi-GPU plan (this profile's floor is {{ min_plan | default('a multi-GPU plan') }}).
+
+# Untested and unsupported are separate states. A new model, or a known model on a GPU it has not
+# been measured on, deploys normally but prints a warning, so the operator knows the run is evidence
+# to record in docs/validation.md. Unsupported combinations fail the asserts above instead.
+- name: Warn when this profile has no live run on this account yet
+  ansible.builtin.debug:
+    msg: >-
+      UNTESTED MODEL — '{{ vllm_model }}' has no recorded live run. Treat this deployment as a
+      validation run: capture `bin/spin validate` and `bin/spin soak` output and add the row to
+      docs/validation.md.
+  when: not (validated | default(true) | bool)
+
+- name: Warn when this GPU generation has no live run for this profile yet
+  ansible.builtin.debug:
+    msg: >-
+      UNTESTED GPU — '{{ vllm_model }}' has a live run on {{ min_plan | default('another tier') }}
+      only. This server is {{ gpu_name | default('an unmeasured GPU') }} (compute capability
+      {{ gpu_compute_cap | default('?') }}). It should run; the numbers in docs/validation.md come
+      from other hardware. Record what you measure here.
+  when:
+    - gpu_compute_cap is defined
+    - (gpu_compute_cap | float) in (untested_compute_capabilities | default([]) | map('float') | list)
+
 - name: Require HF_TOKEN for a gated model profile (fail clearly, not a mid-deploy 401)
   ansible.builtin.assert:
     that: not (gated | default(false) | bool) or ((hf_token | default('') | length) > 0)

@@ -11,7 +11,8 @@ models:
     valid YAML (a bare double-quoted scalar would break on the '"' in the JSON arg). ${PORT} is a
     llama-swap macro and is left literal for llama-swap to expand. #}
 {% set _args = (m.args | default([]) | map('quote') | join(' ')) %}
-{% set _cmd = "docker run --rm --name vllm-swap-" ~ m.name ~ " --network host --gpus all --ipc=host --env-file " ~ compose_dir ~ "/.env -v " ~ hf_cache_dir ~ ":/root/.cache/huggingface -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -e HF_HOME=/root/.cache/huggingface " ~ vllm_image ~ " " ~ m.model_repo ~ " --host 127.0.0.1 --port ${PORT} --served-model-name " ~ m.name ~ " --max-model-len " ~ (m.max_model_len | string) ~ " --gpu-memory-utilization " ~ (m.gpu_memory_utilization | default(gpu_memory_utilization | default(0.90)) | string) ~ ((" " ~ _args) if (_args | length > 0) else "") %}
+{% set _image = m.image | default(vllm_image) %}
+{% set _cmd = "docker run --rm --name vllm-swap-" ~ m.name ~ " --network host --gpus all --ipc=host --env-file " ~ compose_dir ~ "/.env -v " ~ hf_cache_dir ~ ":/root/.cache/huggingface -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -e HF_HOME=/root/.cache/huggingface " ~ _image ~ " " ~ m.model_repo ~ " --host 127.0.0.1 --port ${PORT} --served-model-name " ~ m.name ~ " --max-model-len " ~ (m.max_model_len | string) ~ " --gpu-memory-utilization " ~ (m.gpu_memory_utilization | default(gpu_memory_utilization | default(0.90)) | string) ~ ((" " ~ _args) if (_args | length > 0) else "") %}
   {{ m.name | to_json }}:
     # --network host is REQUIRED on UpCloud: containers on the DEFAULT docker bridge have no working
     # DNS (they get the UpCloud resolvers in resolv.conf but can't reach them from the bridge), so

@@ -65,7 +65,7 @@ time**. Clients pick a model with the OpenAI `model` field; an idle backend unlo
 ```bash
 bin/spin swap-profiles                                   # list presets
 bin/spin up --swap-profile l40s      --plan GPU-8xCPU-64GB-1xL40S       # qwen36 + gemma4-26b/31b
-bin/spin up --swap-profile b200-nvfp4 --plan GPU-24xCPU-240GB-1xB200    # the four NVFP4 models
+bin/spin up --swap-profile b200-nvfp4 --plan GPU-12xCPU-240GB-1xB200    # the four NVFP4 models
 ```
 
 - **Presets** live in `ansible/swap-profiles/<name>.yml` — just a list of model-profile names
@@ -101,34 +101,58 @@ until you fully decommission (below). This is provider-agnostic; the numbers bel
 
 | Tier | Plan | €/h | Spot €/h | Fits |
 |---|---|---|---|---|
-| L40S 48 GB | `GPU-8xCPU-64GB-1xL40S` | 1.11 | 0.83 | FP8 ≤ ~31B (default) |
-| H100 80 GB | `GPU-12xCPU-240GB-1xH100` | 1.79 | 1.78 | FP8 MoE (qwen36-35b) |
-| B200 179 GB | `GPU-24xCPU-240GB-1xB200` | 4.50 | 3.38 | all NVFP4, DeepSeek-V4-Flash |
-| 4×B200 | `GPU-96xCPU-960GB-4xB200` | 18.00 | — | GLM-5.2 NVFP4 (TP=4) |
-| 8×B200 | `GPU-192xCPU-1920GB-8xB200` | 36.00 | — | GLM-5.2 FP8 (TP=8) |
+| L40S 48 GB | `GPU-8xCPU-64GB-1xL40S` | 1.11 | 0.83 | FP8 ≤ ~31B (default, validated) |
+| RTX PRO 6000 96 GB | `GPU-16xCPU-80GB-1xRTXPRO6000` | 1.65 | 0.87 | every FP8 profile, dense NVFP4 — untested |
+| H100 80 GB | `GPU-12xCPU-240GB-1xH100` | 1.79 | 1.78 | FP8 MoE (qwen36-35b, validated) |
+| B200 192 GB | `GPU-12xCPU-240GB-1xB200` | 4.50 | 3.38 | all NVFP4, single-GPU |
+| 2×RTX PRO 6000 | `GPU-32xCPU-160GB-2xRTXPRO6000` | 3.30 | 1.74 | — |
+| 4×RTX PRO 6000 | `GPU-64xCPU-320GB-4xRTXPRO6000` | 6.60 | 3.48 | — |
+| 8×RTX PRO 6000 | `GPU-128xCPU-640GB-8xRTXPRO6000` | 13.20 | 6.96 | — |
+| 4×B200 | `GPU-48xCPU-960GB-4xB200` | 18.00 | 13.50 | GLM-5.2 NVFP4 (TP=4), DeepSeek vision |
+| 8×B200 | `GPU-96xCPU-1920GB-8xB200` | 36.00 | 27.00 | GLM-5.2 FP8 (TP=8) |
 
-The L4 (24 GB, €0.58/h) fits none of the current profiles. Spot tiers are ~25 % cheaper but
-preemptible. Measured cold/warm timings and per-session costs are in [validation.md](validation.md)
-(“Timings & session cost”) — read those before an expensive tier.
+Plan identifiers come from UpCloud's [GPU Server configurations](https://upcloud.com/docs/products/gpu-servers/configurations/);
+the number before `xCPU` is **cores**, not threads. L4 (24 GB, €0.58/h) and B300 (€6.67/h) are also
+offered — the L4 fits none of the current profiles, and no profile targets B300 yet.
+
+**Where RTX PRO 6000 fits.** 96 GB of GDDR7 at 1.6 TB/s, PCIe, **no NVLink**, compute capability
+12.0. It is Blackwell, but a different family from the B200's 10.0, which changes what runs:
+
+- Every **FP8** profile runs on it, with far more headroom than the 48 GB L40S — including
+  `qwen36-35b`, whose validated tier remains the H100.
+- **Dense NVFP4** (`qwen36-27b-nvfp4`, `gemma4-31b-nvfp4`) runs on it: those use the NVFP4
+  scaled-mm path, which has SM120 kernels. Their validated tier remains the B200.
+- Nothing has been **measured** on it yet. Profiles that permit it list cc 12.0 in
+  `untested_compute_capabilities`, so the deploy prints a warning and serves; the numbers in
+  [validation.md](validation.md) are from other hardware until someone records a run.
+- **NVFP4 MoE** does not. Those weights go through a CUTLASS grouped block-scaled GEMM that returns
+  invalid output on compute capability 12.0 unless FlashInfer is patched and built against CUDA 13.0;
+  the pinned images are cu129, and [vllm-project/vllm#35566](https://github.com/vllm-project/vllm/issues/35566)
+  is still open. Those profiles declare `unsupported_compute_capabilities: [12.0]` and stay on B200.
+- Multi-GPU RTX PRO 6000 plans exist but no profile targets them: without NVLink, tensor parallelism
+  runs over PCIe, and the checkpoints large enough to need it are all NVFP4 MoE.
+
+Spot tiers are ~25–47 % cheaper but preemptible. Measured cold/warm timings and per-session costs
+are in [validation.md](validation.md) (“Timings & session cost”) — read those before an expensive tier.
 
 **Standing — disk + IP (billed 24/7 whether or not a GPU exists):**
 
 | Item | Rate | Example |
 |---|---|---|
-| Persistent disk, MaxIOPS | €0.226 / GB·month | 150 GB ≈ **€34/mo**, 500 GB ≈ **€113/mo** |
-| Persistent disk, standard (HDD-backed) | €0.086 / GB·month | 500 GB ≈ **€43/mo** |
-| Floating IP (IPv4) | €3.51 / month | — |
-| Public egress | €0.01 / GB | usually negligible |
+| Persistent disk, MaxIOPS | €0.220 / GB·month | 150 GB ≈ **€33/mo**, 500 GB ≈ **€110/mo** |
+| Persistent disk, standard | €0.085 / GB·month | 500 GB ≈ **€43/mo** |
+| Floating IP (IPv4) | €3.47 / month | — |
+| Public egress | €0.00 / GB | zero-cost egress, fair-use policy applies |
 
-So the "off" state is **not free**: the default 150 GB MaxIOPS disk + IP is **~€37/mo** (a 500 GB
-disk would be ~€116/mo). Size the disk to what you actually cache — set **`WEIGHTS_SIZE_GB`** and
+So the "off" state is **not free**: the default 150 GB MaxIOPS disk + IP is **~€36/mo** (a 500 GB
+disk would be ~€114/mo). Size the disk to what you actually cache — set **`WEIGHTS_SIZE_GB`** and
 **`WEIGHTS_TIER`** in `.env` (used by `bin/spin persistent-init`; e.g. bump to `500` for GLM-5.2, or
 `WEIGHTS_TIER=standard` for cheaper/slower). An existing disk grows to the new size on the next
 `persistent-init` (UpCloud can't shrink one — `bin/spin persistent-destroy` then re-init to go smaller).
 
 **Big-model tradeoff (e.g. GLM-5.2 NVFP4, ~377 GB weights):** keeping it on a 500 GB MaxIOPS disk
-costs ~€113/mo standing, but each spin-up is warm (~18–20 min to serving). Deleting the disk between
-uses drops standing cost to just the IP (~€3.5/mo) but every spin-up re-downloads ~447 GB (~1 h,
+costs ~€110/mo standing, but each spin-up is warm (~18–20 min to serving). Deleting the disk between
+uses drops standing cost to just the IP (~€3.47/mo) but every spin-up re-downloads ~447 GB (~1 h,
 plus egress). Keep-warm pays off above roughly one spin per few days; otherwise delete and re-pull.
 
 **Winding down:**
