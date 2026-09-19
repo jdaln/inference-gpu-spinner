@@ -309,6 +309,14 @@ cmd_up() {
   fi
 
   [ -n "${ACME_EMAIL:-}" ]   || die "ACME_EMAIL not set (needed for Let's Encrypt)."
+  # The vllm role rejects placeholder domains, but only after the server exists and ~40 tasks
+  # have run. Same test here costs nothing and fails before anything is provisioned.
+  if printf '%s' "$ACME_EMAIL" | tr '[:upper:]' '[:lower:]' \
+     | grep -qE '@(example\.(com|org|net)|[^@]*\.(invalid|local|test))$'; then
+    die "ACME_EMAIL is still a placeholder ($ACME_EMAIL).
+    Let's Encrypt refuses these domains, so Caddy would never get a certificate and HTTPS would
+    fail after an otherwise clean deploy. Set a real, deliverable address in .env."
+  fi
   [ -n "${VLLM_API_KEY:-}" ] || die "VLLM_API_KEY not set (vLLM auth)."
   check_tfvars
   # Guard against an unintended resize: with no --plan, a re-run on an EXISTING server would plan
@@ -367,8 +375,19 @@ cmd_up() {
 
   wait_ssh "$host"
 
+  # ansible-playbook exits 0 when the host pattern matches nothing, so a broken inventory used to
+  # produce a "successful" spin-up that configured nothing at all — the endpoint and test commands
+  # below would print for a box Ansible never touched. Resolve the inventory first and stop here if
+  # our host is not in it. -i names the file rather than the directory, so this works even where
+  # ansible.cfg is not picked up.
+  if ! ansible-inventory -i "$INVENTORY" --list 2>/dev/null \
+       | jq -e --arg h "$host" '.gpu.hosts | index($h)' >/dev/null 2>&1; then
+    die "the 'gpu' group in $INVENTORY does not resolve to $host, so Ansible would configure nothing.
+    Check what Ansible sees:  ansible-inventory -i $INVENTORY --list"
+  fi
+
   log "Configuring with Ansible (vLLM + Caddy)..."
-  ansible-playbook ansible/site.yml -e "vllm_model=$model" -e "sslip_host=$sslip" ${ans_args[@]+"${ans_args[@]}"}
+  ansible-playbook -i "$INVENTORY" ansible/site.yml -e "vllm_model=$model" -e "sslip_host=$sslip" ${ans_args[@]+"${ans_args[@]}"}
 
   log "Up. Endpoint: $endpoint"
   # The API expects the served model name (what /v1/models lists). In swap mode that's a preset
