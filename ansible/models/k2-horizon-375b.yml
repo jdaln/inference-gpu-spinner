@@ -1,0 +1,52 @@
+---
+# K2-Horizon-375B-A23B (IFM) in FP8 — frontier-scale MoE, 379B stored parameters including
+# embeddings with 26.7B active per token. 61 layers at hidden 6144, 192 experts with 8 active,
+# text-only, 524,288 native context. The FP8 build is ~391 GB on disk across 20 shards
+# (compressed-tensors); the BF16 original is ~758 GB.
+#
+# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+#
+# PINNED IMAGE (required): K2HorizonForCausalLM is in neither v0.23.0 nor v0.29.0. It reached vLLM
+# main after the v0.29.0 release, so this profile uses the same dated nightly as
+# deepseek-v41-flash. Replace both with a release tag once one carries the architecture.
+#
+# WHY FP8 AT TP4. recipes.vllm.ai/IFM/K2-Horizon-375B-A23B serves
+# the BF16 repo with --tensor-parallel-size 8 --dtype bfloat16, and its only verified run is an
+# 8-GPU MI355X node. At ~758 GB that would need 8x B200 here, about 36 EUR/h. The FP8 build is
+# ~391 GB, fits 4x B200 (768 GB) at TP4 with room for KV, and halves the hourly cost. Neither
+# configuration has a live run on this account; if you would rather reproduce the published one,
+# switch model_repo to IFM/K2-Horizon-375B-A23B, set tensor_parallel_size to 8, add
+# "--dtype" / "bfloat16" to extra_vllm_args, and set min_plan to GPU-96xCPU-1920GB-8xB200.
+#
+# max_model_len 131072 is the value the verified MI355X run used, not the checkpoint's 524,288
+# native limit. With ~98 GB of weights per rank against 179 GB there is headroom to raise it; do
+# that once a live run shows the KV pool vLLM reports at startup.
+#
+# --trust-remote-code and --enable-expert-parallel are both from the recipe's launch command.
+# Reasoning is selectable per request through chat_template_kwargs {"reasoning_effort": "..."} with
+# high (the default), medium and low, or server-wide via --default-chat-template-kwargs. The model
+# card's sampling suggestion is temperature 1.0 with top_p 0.95.
+#
+# DISK: ~391 GB of weights against a default 150 GB /data. Set WEIGHTS_SIZE_GB to at least 450 and
+# re-run bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 99/mo standing.
+model_repo: "IFM/K2-Horizon-375B-A23B-FP8"
+served_name: "k2-horizon-375b"
+vllm_image_override: "vllm/vllm-openai:cu129-nightly-cd10ed6f9f6b37a8ace9cf380007e66fe12ec0c3"
+tensor_parallel_size: 4
+max_model_len: 131072
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--trust-remote-code"
+  - "--enable-expert-parallel"
+  - "--reasoning-parser"
+  - "k2_horizon"
+  - "--tool-call-parser"
+  - "k2_horizon"
+  - "--enable-auto-tool-choice"
+min_plan: "GPU-48xCPU-960GB-4xB200"
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~98 GB of weights per rank at TP=4
+validated: false   # newly added — no live run on this account yet
+requires_review: true
+health_wait_retries: 450   # x10s = 75 min — ~391 GB to pull, then TP=4 init

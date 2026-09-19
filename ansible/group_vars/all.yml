@@ -16,6 +16,22 @@ vllm_image: "vllm/vllm-openai:v0.23.0-cu129-ubuntu2404"
 vllm_port: 8000
 # Fallback GPU memory fraction. Every model profile sets its own gpu_memory_utilization (which wins);
 # this is the default for a llama-swap backend whose swap_models entry omits it.
+#
+# Why 0.90 and not 0.95 or 0.98: this fraction is NOT total GPU usage. vLLM sizes weights, KV cache
+# and the profiling forward pass inside it, while CUDA graph capture, NCCL buffers, the CUDA context
+# and fragmentation allocate OUTSIDE it. The measured rows in docs/validation.md show the gap: at
+# 0.90 an L40S sits at 41.0-41.6 of 46.1 GiB (89-90%), an H100 at 74.2 of 81.6 (91%), and a B200 as
+# high as 170.8 of 183.4 (93%). The remaining headroom is consumed by those uncounted allocations.
+#
+# On a B200, raising 0.90 to 0.95 adds about 9 GB of KV cache, against pools already measured in
+# the millions of tokens. The risk it adds is an OOM during graph capture at startup, or during
+# serving on a large multimodal batch, on a GPU billed by the hour. Upstream recipes land on 0.90 for the same reason, and one of them
+# (Qwen3.8 on a 31.4 GiB card) records that 0.80 and 0.93 left identical free memory because capture
+# allocates outside the budget either way — so the knob cannot fix that class of OOM.
+#
+# It is a per-profile override, so measure before changing it globally: deploy, read the KV pool
+# vLLM reports at startup via `bin/spin validate`, raise the profile's value, redeploy and compare.
+# qwen38-flash-next already sets 0.85 because its recipe measured that on 4x H100.
 gpu_memory_utilization: 0.90
 
 # --- Caddy (reverse proxy + automatic TLS) ---

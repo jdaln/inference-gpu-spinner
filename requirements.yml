@@ -3,8 +3,11 @@
 # No external ROLES are used: the UpCloud "Ubuntu with NVIDIA Drivers and CUDA"
 # template pre-ships the NVIDIA driver, CUDA, NVIDIA Container Toolkit and Docker,
 # so our roles only verify those and then configure vLLM + Caddy.
+#
+# Pinned exactly, for the same reason requirements.txt is: two machines should resolve the same
+# collection versions. Bump them deliberately and re-run the render tests.
 collections:
   - name: ansible.posix       # ansible.posix.mount (fstab)
-    version: ">=1.5.0"
+    version: "1.6.2"
   - name: community.general   # community.general.filesystem (mkfs)
-    version: ">=8.0.0"
+    version: "10.7.6"

@@ -22,9 +22,12 @@ You need:
 
 - An UpCloud account with GPU plans enabled. GPUs exist only in the `fi-hel2` zone.
 - An UpCloud API token, created in the control panel under People → API tokens.
+- **Python 3.11, 3.12 or 3.13** on the control machine. Versions outside that range fail; macOS
+  ships 3.9 as `/usr/bin/python3`, which is the common cause. See step 1.
 - A machine to drive it from, with `tofu` (OpenTofu 1.7 or newer), `ansible-playbook`, `curl`,
   `jq` and `ssh` on `PATH`. `bin/spin` checks all five at startup and stops with a clear error if
-  one is missing. `upctl`, the UpCloud CLI, is optional but makes one setup step much easier.
+  one is missing. `upctl`, the UpCloud CLI, is optional — step 3 shows how to do the one thing
+  it is useful for without it.
 
 Understand the two cost buckets before you create anything:
 
@@ -39,11 +42,31 @@ command, `bin/spin persistent-destroy`, covered in step 7.
 
 ## Step 1 — Prepare the control machine
 
+Check the interpreter before building the venv, because the failure otherwise arrives as a
+wall of every Ansible version ever published rather than a version error:
+
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+python3 -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}"); assert (3,11) <= v < (3,14), "need Python 3.11-3.13"'
+```
+
+If that fails, name a suitable interpreter explicitly rather than trusting `python3` — on macOS
+`python3` is often the system 3.9, while Homebrew's newer ones sit alongside it:
+
+```bash
+ls /opt/homebrew/bin/python3.1* /usr/local/bin/python3.1* 2>/dev/null
+```
+
+Then, substituting the version you found:
+
+```bash
+python3.12 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
+
+Why the range: `ansible-core` 2.18 requires 3.11 or newer, and `ansible-lint` 26 refuses to run
+on 3.14 while `ansible-core` is below 2.20. Both are pinned exactly in `requirements.txt`, which
+CI installs too, so a working control machine here matches a working one there.
 
 Nothing in this step touches the cloud.
 
@@ -90,11 +113,31 @@ cp terraform/providers/upcloud/terraform.tfvars.example \
    terraform/providers/upcloud/terraform.tfvars
 ```
 
+**Edit the copy before going further.** It lands with an `os_template` of `REPLACE_ME` and an
+empty key list. Nothing in the persistent stack reads this file, so an unedited copy goes
+unnoticed until the ephemeral apply. `bin/spin up` refuses to start until both are filled in.
+
 Two values are required and have no defaults:
 
-- `os_template` — the UpCloud public template that ships the NVIDIA driver, CUDA and Docker. Find
-  its exact title or UUID with `upctl storage list --public --template`. The Terraform plan refuses
-  to run while it is unset.
+- `os_template` — the UpCloud public template that ships the NVIDIA driver, CUDA and Docker. The
+  Terraform plan refuses to run while it is unset. With `upctl` installed:
+
+  ```bash
+  upctl storage list --public --template
+  ```
+
+  Without it, read the same list from the API using the token already in `.env`:
+
+  ```bash
+  set -a; . ./.env; set +a
+  curl -fsS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+    https://api.upcloud.com/1.3/storage/template \
+    | jq -r '.storages.storage[] | select(.title|test("GPU|NVIDIA|CUDA";"i")) | "\(.uuid)  \(.title)"'
+  ```
+
+  Either the UUID or the exact title works in `terraform.tfvars`. The list also contains
+  `UpCloud K8s ... (with NVIDIA drivers & CUDA)` entries — those are Kubernetes node images.
+  You want the plain `Ubuntu Server ... (with NVIDIA drivers & CUDA)` one.
 - `ssh_public_keys` — the keys installed for root login on the GPU box. Without one you cannot
   reach the server you just paid for.
 
@@ -104,6 +147,28 @@ Everything else in that file is an optional override, including `plan`, which de
 `terraform/persistent/terraform.tfvars` is entirely optional — every variable in that stack has a
 default, and `WEIGHTS_SIZE_GB` in `.env` covers the one you are likely to change.
 
+### Sizing the weights disk
+
+Decide this before step 4, because UpCloud cannot shrink a disk afterwards. Two thresholds sit
+close together:
+
+| Size | What changes |
+|---|---|
+| under ~110 GB | The filesystem reports under 100 GB, so Docker's data-root stays on the boot disk and the ~23 GB vLLM image is pulled again on every spin-up. |
+| 110–149 GB | Image and weights both persist on `/data`, and `bin/spin down` **keeps** the disk, so the next spin-up is minutes. |
+| 150 GB and above | `bin/spin down` **deletes** the disk by default (`DECOMMISSION_THRESHOLD_GB`), so the next spin-up re-downloads everything. |
+
+For a first run on the default `qwen36` (~27 GB of weights plus the ~23 GB image), **120** is the
+useful choice — large enough to keep the image, small enough that a teardown does not throw the
+cache away:
+
+```bash
+WEIGHTS_SIZE_GB=120
+```
+
+That is about €30/month while the disk exists, or €0.04/hour. Larger models need much more; each
+profile in `ansible/models/` states its own figure in the header comment.
+
 ## Step 4 — Create the persistent layer
 
 Run this once:
@@ -111,6 +176,10 @@ Run this once:
 ```bash
 bin/spin persistent-init
 ```
+
+OpenTofu prints a plan and waits for you to type `yes`. Any other answer cancels the apply. The
+command stops on the first failure, so a cancelled apply returns to the shell prompt with no
+further output and nothing created. Confirm with `tofu -chdir=terraform/persistent output`.
 
 This creates the weights disk and the floating IP, and prints the IP. The dashed form of that IP
 is your permanent hostname, `<dashed-ip>.sslip.io`. Because the hostname never changes, the TLS
@@ -124,7 +193,18 @@ Both resources are guarded against a stray `tofu destroy`. The standing bill sta
 bin/spin up
 ```
 
-That deploys the default profile, `qwen36`, on an L40S. To pick something else:
+That deploys the default profile, `qwen36`, on an L40S.
+
+**Check the auto-shutdown time before a first run.** Every deploy installs a timer that powers
+the box off at 21:00 `Europe/Zurich` by default, and it fires regardless of what the box is
+doing — including a deployment still in progress. If you are starting in the evening, or in
+another timezone, set it now rather than discovering it mid-download:
+
+```bash
+bin/spin up --shutdown-at 23:30 --shutdown-tz Area/City
+```
+
+Step 7 covers the rest of that timer. To pick a different model:
 
 ```bash
 bin/spin up --model qwen36-35b --plan GPU-12xCPU-240GB-1xH100
@@ -279,6 +359,10 @@ stays empty in multi-model mode. The rest of it, and all of `soak`, work either 
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `persistent-init` returns with no output at all | The OpenTofu confirmation was not answered `yes`, so the apply was cancelled and the command stopped. | Re-run it and type `yes` at the prompt. |
+| `up` prints "Persistent weights disk missing — recreating it first..." then stops | Older builds called the interactive `persistent-init` from inside the non-interactive `up`. | Fixed: that path now auto-approves. Run `bin/spin persistent-init` on its own first if you are on an older checkout. |
+| `terraform.tfvars still has os_template = "REPLACE_ME"` | Step 3's file was copied but not edited. | Fill in `os_template` and `ssh_public_keys`; the error prints the command that lists templates. |
+| `Could not find a version that satisfies the requirement ansible` | The venv was built with a Python older than 3.11 (often macOS's `/usr/bin/python3`, 3.9). | Delete `.venv`, rebuild it naming a 3.11–3.13 interpreter (step 1). |
 | `required tool 'X' not found in PATH` | Missing dependency on the control machine. | Install it, or point `TOFU` at a non-standard OpenTofu binary. |
 | `UPCLOUD_TOKEN not set` | `.env` missing or not filled in. | Complete step 2. Run `bin/spin` from the repository root. |
 | Deploy fails on `ACME_EMAIL must be a REAL deliverable address` | A placeholder contact address. | Use an address you receive mail at. |

@@ -80,6 +80,7 @@ depends on whether the checkpoint is dense or MoE — see below the table.
 | `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | 4×B200 | — |
 | `glm53-flash` | GLM-5.3-Flash (321B-A18B MoE, **multimodal**) | FP8 | — (new) | 4×B200 — `requires_review` |
 | `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | — (new) | 8×B200 — `requires_review` |
+| `k2-horizon-375b` | K2-Horizon-375B-A23B (379B-A27B MoE) | FP8 | — (new) | 4×B200 — `requires_review` |
 | `kimi-k3` | Kimi K3 (93L, 896 experts, **multimodal**) | compressed-tensors | — (new) | **no UpCloud plan fits** |
 | `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | — (new) | 4×B200 — `requires_review` |
 | `deepseek-v41-flash` | DeepSeek-V4.1-Flash (552B + 196B Engram MoE, **multimodal**) | MXFP4+MXFP8 | — (new) | 4×B200 — `requires_review` |
@@ -126,11 +127,11 @@ cheaper today, GPU pricing moves, and the H100 rows have measured numbers behind
 The "validated tier" column means the profile has a dated live run in
 [docs/validation.md](docs/validation.md) — context, KV pool, concurrency and VRAM. Anything in the
 untested column should work and warns when you deploy it. Treat that run as a validation run and
-record what you measure. Seven profiles are gated behind `requires_review` (pass
+record what you measure. Eight profiles are gated behind `requires_review` (pass
 `--allow-unvalidated` to run anyway): `glm52`, `glm53` and `deepseek-v4-pro-0813` because an
-8×B200 node costs ~€36/h to test; `glm53-flash`, `deepseek-v41-flash` and
-`deepseek-v4-flash-vision` because they need four B200s and a container image outside the
-shared pin; and `kimi-k3` because no plan here fits it.
+8×B200 node costs ~€36/h to test; `glm53-flash`, `k2-horizon-375b`, `deepseek-v41-flash` and `deepseek-v4-flash-vision` because
+they need four B200s and a container image outside the shared pin; and `kimi-k3` because no
+plan here fits it.
 
 All current model repos are **ungated** on Hugging Face, so no `HF_TOKEN` is required (but setting one
 in `.env` avoids the anonymous download throttle). **LoRA** adapter serving and **multi-model swap**
@@ -179,8 +180,8 @@ python3 tests/check-vllm-compat.py            # all profiles
 python3 tests/check-vllm-compat.py qwen38     # just one
 ```
 
-Being in the model registry is not the same as being supported: a recipe often states a higher
-version floor than the release that first carried the architecture. Read the recipe, then pin
+Presence in the model registry does not imply support. A recipe often states a higher version
+floor than the release that first carried the architecture. Read the recipe, then pin
 accordingly.
 
 ## Other providers

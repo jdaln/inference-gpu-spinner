@@ -132,7 +132,7 @@ offered — the L4 fits none of the current profiles, and no profile targets B30
 - Multi-GPU RTX PRO 6000 plans exist but no profile targets them: without NVLink, tensor parallelism
   runs over PCIe, and the checkpoints large enough to need it are all NVFP4 MoE.
 
-Spot tiers are ~25–47 % cheaper but preemptible. Measured cold/warm timings and per-session costs
+Measured cold/warm timings and per-session costs
 are in [validation.md](validation.md) (“Timings & session cost”) — read those before an expensive tier.
 
 **Standing — disk + IP (billed 24/7 whether or not a GPU exists):**

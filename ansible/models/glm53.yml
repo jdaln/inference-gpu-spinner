@@ -7,8 +7,8 @@
 # NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
 #
 # PINNED IMAGE. The architecture (GlmMoeDsaForCausalLM) is already in the shared v0.23.0 pin, but
-# the recipe's floor for THIS model is vLLM 0.28.0 — being in the model registry is not the same as
-# being supported. v0.29.0 is the newest release and is what this profile uses.
+# the recipe's floor for THIS model is vLLM 0.28.0. Presence in the model registry does not imply
+# support. v0.29.0 is the newest release and is what this profile uses.
 #
 # 8x B200. The recipe's single-node options are 8x H200 or 8x H20 (141 GB each) for FP8, and 8x B200
 # (180 GB each) to reach the full 1M context with an FP8 KV cache. UpCloud has neither H200 nor H20,
