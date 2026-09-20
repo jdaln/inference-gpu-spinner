@@ -34,10 +34,10 @@
       is {{ min_plan | default('an L40S or larger') }}) or override with -e allow_unvalidated_model=true.
       (Running anyway would OOM at vLLM start on a GPU you are already paying for.)
 
-# VRAM is not enough on its own: an RTX PRO 6000 (96 GB, compute capability 12.0) and a B200
-# (192 GB, cc 10.0) are both Blackwell, but NVFP4 kernels are not equally usable on both. Profiles
-# declare min_compute_capability when they need a GPU generation, and list any capability the
-# kernels are known to mis-handle in unsupported_compute_capabilities.
+# VRAM is not enough on its own: an RTX PRO 6000 (96 GB, cc 12.0) and a B200 (192 GB, cc 10.0) are
+# both Blackwell, but NVFP4 kernels are not equally usable on both. Profiles set
+# min_compute_capability for the generation they need, and list capabilities the kernels mis-handle
+# in unsupported_compute_capabilities.
 - name: Preflight — this GPU generation is new enough for the selected model profile
   ansible.builtin.assert:
     that:
@@ -75,9 +75,9 @@
       {{ tensor_parallel_size | default(1) }} but this server has {{ gpu_count | default('?') }} GPU(s).
       Pick a multi-GPU plan (this profile's floor is {{ min_plan | default('a multi-GPU plan') }}).
 
-# Some images are built against a newer CUDA than the shared pin and need a newer driver on the
-# host. The UpCloud template's driver is whatever it ships, so check it before the container starts
-# and fails with a CUDA error that does not name the real cause.
+# Some images are built against a newer CUDA than the shared pin and need a newer host driver. The
+# UpCloud template ships whatever it ships, so check before the container fails with a CUDA error
+# that does not name the real cause.
 - name: Preflight — the host driver is new enough for this profile's image
   ansible.builtin.assert:
     that:
@@ -88,9 +88,9 @@
       (its image is a newer CUDA build), but this host reports {{ gpu_driver_major | default('?') }}.
       The UpCloud GPU template decides the driver, so this needs a template that ships a newer one.
 
-# Untested and unsupported are separate states. A new model, or a known model on a GPU it has not
-# been measured on, deploys normally but prints a warning, so the operator knows the run is evidence
-# to record in docs/validation.md. Unsupported combinations fail the asserts above instead.
+# Untested and unsupported are separate states: an unmeasured model or GPU deploys with a warning,
+# so the operator knows the run is evidence for docs/validation.md. Unsupported combinations fail
+# the asserts above instead.
 - name: Warn when this profile has no live run on this account yet
   ansible.builtin.debug:
     msg: >-
@@ -132,7 +132,7 @@
       - acme_email | default('') | length > 0
       - "'@' in (acme_email | default(''))"
       # Let's Encrypt REJECTS placeholder domains (example.com/org/net, .invalid, .local, .test) as
-      # a forbidden contact — Caddy then never gets a cert and HTTPS silently fails AFTER a full
+      # a forbidden contact — Caddy then never gets a cert and HTTPS silently fails after a full
       # deploy. Catch it upfront (learned live 2026-07-05: gpu-spinner@example.com blocked the cert).
       - not (acme_email | default('') | lower | regex_search('@(example\.(com|org|net)|[^@]*\.(invalid|local|test))$'))
       - vllm_api_key | default('') | length > 0
@@ -141,9 +141,8 @@
       Let's Encrypt refuses placeholder domains like example.com/.local/.test, so Caddy would never
       obtain a TLS cert. Current ACME_EMAIL='{{ acme_email | default('') }}'.
 
-# Plugin overlays are built BEFORE the compose file is rendered, because the render needs the paths
-# they produce — and after the preflights above, so a profile that cannot run on this GPU fails
-# before anything is cloned or compiled.
+# Built before the compose render, which needs the paths they produce, and after the preflights, so
+# a profile that cannot run on this GPU fails before anything is cloned or compiled.
 - name: Build any out-of-tree vLLM plugins this profile pins
   ansible.builtin.include_tasks: plugins.yml
   when: (vllm_plugins | default([])) | length > 0

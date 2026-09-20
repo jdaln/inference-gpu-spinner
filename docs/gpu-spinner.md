@@ -2,7 +2,8 @@
 
 On-demand GPU inference, built to be **cheap to start and cheap to stop**. The GPU bills by the
 hour, so creating and destroying it is the daily routine; only a small, cheap layer survives between
-sessions. This doc covers the architecture, the security model, multi-model serving, and cost.
+sessions. This doc covers the architecture, the security model, multi-model serving, cost, and
+which GPU runs what.
 The live-validated model matrix is the separate system of record: [validation.md](validation.md).
 
 ## Architecture: two stacks + Ansible
@@ -20,6 +21,10 @@ EPHEMERAL (terraform/providers/<provider>) — created + destroyed every session
 ANSIBLE (push over SSH)
   gpu(verify) → autostop → docker(verify) → vllm (vLLM + Caddy via docker compose, systemd)
                                           └→ llama_swap (multi-model, when enabled)
+
+CLI (bin/spin) — deps, .env, usage, dispatch; commands live in bin/lib/*.sh, sourced at startup
+  common (log/tofu/api) · net (allowlist, firewall, ssh wait) · plan (plan + tfvars resolution)
+  stack (up/down/start/stop/status/…) · checks (validate, soak)
 ```
 
 **Two stacks, because the split maps to the billing boundary.** The GPU server is disposable
@@ -124,81 +129,8 @@ Plan identifiers come from UpCloud's [GPU Server configurations](https://upcloud
 the number before `xCPU` is **cores**, not threads. L4 (24 GB, €0.58/h) and B300 (€6.67/h) are also
 offered — the L4 fits none of the current profiles, and no profile targets B300 yet.
 
-**Where RTX PRO 6000 fits.** 96 GB of GDDR7 at 1.6 TB/s, PCIe, **no NVLink**, compute capability
-12.0. It is Blackwell, but a different family from the B200's 10.0, which changes what runs:
-
-- Every **FP8** profile runs on it, with far more headroom than the 48 GB L40S — including
-  `qwen36-35b`, which was measured on the H100.
-- **Dense NVFP4** (`qwen36-27b-nvfp4`, `gemma4-31b-nvfp4`) runs on it: those use the NVFP4
-  scaled-mm path, which has SM120 kernels. They were measured on the B200.
-- Nothing has been **measured** on it yet. Profiles that permit it list cc 12.0 in
-  `untested_compute_capabilities`, so the deploy prints a warning and serves; the numbers in
-  [validation.md](validation.md) are from other hardware until someone records a run.
-- **Multi-GPU plans now have profiles.** `qwen38-flash-next` and `glm53-flash-nvfp4` default to 4×,
-  and `k2-horizon-375b` to 8× at TP=8. There is still **no NVLink**, so tensor parallelism runs over
-  PCIe — unmeasured here, and the reason to record throughput on the first runs. If engine init
-  hangs inside NCCL rather than failing, `NCCL_P2P_DISABLE=1` via a profile's `extra_env` is the
-  fallback; it costs throughput where P2P does work, so do not set it pre-emptively.
-
-**What actually blocks the rest, and what no longer does.** The story here changed in 2026 and the
-old version is worth unlearning:
-
-- **Sparse attention is the live blocker.** Every remaining large profile is a DeepSeek-style sparse
-  MLA (DSA) model, and that has no working SM120 path.
-  [vllm#55757](https://github.com/vllm-project/vllm/issues/55757) reports GLM-5.3, GLM-5.2 and
-  DeepSeek-V4 unservable there, reproduced on 8× RTX PRO 6000 — and it does **not** fail cleanly: a
-  short-prompt smoke test passes and only realistic prompt lengths fail. GLM-5.3-Flash is worse
-  still, being rope-free (`qk_rope_head_dim: 0`), which has no SM120 kernel at all
-  ([vllm#53963](https://github.com/vllm-project/vllm/issues/53963)). The fixes
-  ([vllm#55277](https://github.com/vllm-project/vllm/pull/55277),
-  [vllm#54929](https://github.com/vllm-project/vllm/pull/54929),
-  [vllm#41834](https://github.com/vllm-project/vllm/pull/41834)) were all open at 2026-09-19.
-- **The NVFP4 MoE GEMM fault is reported fixed** on cu130 builds — the FlashInfer CUTLASS
-  grouped-GEMM fix from `flashinfer-ai/flashinfer#2708` is in vLLM's FlashInfer pin. Treat
-  "NVFP4 MoE returns invalid output on cc 12.0" as a property of the **cu129 images this repo
-  pins**, not of the hardware.
-- **Much of that symptom was never the GEMM.**
-  [vllm#54189](https://github.com/vllm-project/vllm/issues/54189): `ModelOptNvFp4FusedMoE` leaves
-  `w13_input_scale` uninitialised and expects the checkpoint to fill it. A weight-only NVFP4
-  checkpoint never does, it reads 0.0, and every expert output is multiplied by zero — silently. The
-  tell is a model that loads and serves but emits one token repeatedly.
-
-### cu130 images, and the driver that gates them
-
-`vllm/vllm-openai` publishes cu130 tags for these models in the same official repository the repo
-already pins from — `glm53-flash-x86_64-cu130`, `qwen38-flash-next-x86_64-cu130`,
-`deepseekv4-flash-vision-x86_64-cu130` among others. Moving a profile to cu130 is a tag change, not
-a new image line.
-
-The one gate is the **host driver**: cu130 needs r580+, and the UpCloud GPU template decides it.
-Nobody has recorded what it ships — `gpu_min_driver_blackwell` is 570 and only `kimi-k3` declares
-`min_driver_major: 580`. The gpu role already prints the driver on every deploy
-(`… driver <major>` in "Report the detected GPU topology"), so read that line on the next run and
-record it in [validation.md](validation.md); it settles the question for every other profile. If it
-is r580+, `gemma4-26b-nvfp4` and `qwen36-35b-nvfp4` become worth re-testing on a single RTX PRO 6000
-at €1.65/h against €4.50 on a B200.
-
-### Plugin overlays
-
-When a GPU needs a kernel no released image carries, a profile can pin an out-of-tree package in
-`vllm_plugins` (see `ansible/roles/vllm/tasks/plugins.yml`). Each entry is cloned at a **pinned
-commit**, built inside that profile's own image — the `.so` is libtorch- and Python-ABI-tagged, so
-it has to be — and left under `/data/ext/<name>-<commit>` on the persistent disk, so the build
-happens once per commit and survives teardown. The compose file mounts it read-only and puts it on
-`PYTHONPATH`.
-
-Plugins register through vLLM's `vllm.general_plugins` entry point, so **no vLLM file is patched**,
-and a well-behaved one is inert unless the profile also sets its environment variable. That is the
-property the safety argument rests on: verify it in the source before adding an entry.
-
-`glm53-flash-nvfp4` is the only profile using this today. It carries
-[Libertai/vllm-sparse-mla-blackwell](https://github.com/Libertai/vllm-sparse-mla-blackwell)
-(Apache-2.0) for rope-free sparse MLA on sm_120/121 plus the `vllm#54189` activation-scale fix.
-It is third-party code from a small project: read it at the pinned commit rather than trusting it.
-Retire the overlay once `vllm#55277` and `flashinfer#5075` land in a release image.
-
-Measured cold/warm timings and per-session costs
-are in [validation.md](validation.md) (“Timings & session cost”) — read those before an expensive tier.
+Measured cold/warm timings and per-session costs are in [validation.md](validation.md)
+(“Timings & session cost”) — read those before an expensive tier.
 
 **Standing — disk + IP (billed 24/7 whether or not a GPU exists):**
 
@@ -238,3 +170,72 @@ plus egress). Keep-warm pays off above roughly one spin per few days; otherwise 
   the stable IP/cert are lost, so the next spin-up re-downloads everything and gets a new IP + cert.
   `prevent_destroy` still guards `terraform/persistent/main.tf` against a stray `tofu destroy`, so
   the command (which deletes via the API, then drops the resources from state) is the supported path.
+
+## What runs on which GPU
+
+**Where RTX PRO 6000 fits.** 96 GB of GDDR7 at 1.6 TB/s, PCIe, **no NVLink**, compute capability
+12.0. It is Blackwell, but a different family from the B200's 10.0, which changes what runs:
+
+- Every **FP8** profile runs on it with far more headroom than the 48 GB L40S, `qwen36-35b`
+  included. So does **dense NVFP4** (`qwen36-27b-nvfp4`, `gemma4-31b-nvfp4`), which takes the NVFP4
+  scaled-mm path and has SM120 kernels. Both were measured elsewhere — H100 and B200 respectively.
+- One profile is **measured** here: `glm53-flash-nvfp4`, 4× at TP=4, 2026-09-20
+  ([validation.md](validation.md)). Other cc 12.0 lanes list it in
+  `untested_compute_capabilities`, so the deploy warns and serves.
+- **Multi-GPU:** `qwen38-flash-next` and `glm53-flash-nvfp4` default to 4×, `k2-horizon-375b` to 8×
+  at TP=8, all over PCIe — record throughput on the first runs. If engine init hangs inside NCCL
+  rather than failing, `NCCL_P2P_DISABLE=1` in a profile's `extra_env` is the fallback; it costs
+  throughput where P2P works, so not pre-emptively.
+
+**What blocks the rest: sparse attention, not quantisation.**
+
+- **No SM120 path for DSA models.** Every remaining large profile is a DeepSeek-style sparse MLA
+  model, and [vllm#55757](https://github.com/vllm-project/vllm/issues/55757) reports GLM-5.3,
+  GLM-5.2 and DeepSeek-V4 unservable there, reproduced on 8× RTX PRO 6000. It does **not** fail
+  cleanly: a short-prompt smoke test passes, realistic lengths break. GLM-5.3-Flash is worse still —
+  rope-free (`qk_rope_head_dim: 0`), with no SM120 kernel at all
+  ([vllm#53963](https://github.com/vllm-project/vllm/issues/53963)). The fixes
+  ([vllm#55277](https://github.com/vllm-project/vllm/pull/55277),
+  [vllm#54929](https://github.com/vllm-project/vllm/pull/54929),
+  [vllm#41834](https://github.com/vllm-project/vllm/pull/41834)) were all open at 2026-09-19.
+- **The NVFP4 MoE GEMM fault is reported fixed** on cu130 builds — the FlashInfer CUTLASS
+  grouped-GEMM fix from `flashinfer-ai/flashinfer#2708` is in vLLM's FlashInfer pin. Treat
+  "NVFP4 MoE returns invalid output on cc 12.0" as a property of the **cu129 images this repo
+  pins**, not of the hardware.
+- **Much of that symptom was never the GEMM.**
+  [vllm#54189](https://github.com/vllm-project/vllm/issues/54189): `ModelOptNvFp4FusedMoE` leaves
+  `w13_input_scale` uninitialised and expects the checkpoint to fill it. A weight-only NVFP4
+  checkpoint never does, it reads 0.0, and every expert output is multiplied by zero — silently. The
+  tell is a model that loads and serves but emits one token repeatedly.
+
+### cu130 images, and the driver that gates them
+
+`vllm/vllm-openai` publishes cu130 tags for these models in the repository this repo already pins
+from — `glm53-flash-x86_64-cu130`, `qwen38-flash-next-x86_64-cu130`,
+`deepseekv4-flash-vision-x86_64-cu130`, among others. Moving a profile to cu130 is a tag change, not
+a new image line.
+
+The gate is the **host driver**: cu130 needs r580+. The UpCloud GPU template shipped **r595
+(595.58.03)** on 2026-09-20, so cu130 tags are usable on this account — `gpu_min_driver_blackwell`
+stays at 570 and only `kimi-k3` and `glm53-flash-nvfp4` declare `min_driver_major: 580`. That also
+makes `gemma4-26b-nvfp4` and `qwen36-35b-nvfp4` worth re-testing on a single RTX PRO 6000 at
+€1.65/h against €4.50 on a B200. The gpu role prints the driver on every deploy (`… driver <major>`
+in "Report the detected GPU topology") — check it if the template changes.
+
+### Plugin overlays
+
+When a GPU needs a kernel no released image carries, a profile can pin an out-of-tree package in
+`vllm_plugins` (see `ansible/roles/vllm/tasks/plugins.yml`). Each entry is cloned at a **pinned
+commit**, built inside that profile's own image — the `.so` is libtorch- and Python-ABI-tagged, so
+it has to be — and left under `/data/ext/<name>-<commit>`, so the build happens once per commit and
+survives teardown. The compose file mounts it read-only on `PYTHONPATH`.
+
+Plugins register through vLLM's `vllm.general_plugins` entry point, so **no vLLM file is patched**,
+and a well-behaved one is inert unless the profile sets its environment variable. The safety
+argument rests on that — verify it in the source before adding an entry.
+
+`glm53-flash-nvfp4` is the only profile using this today. It carries
+[Libertai/vllm-sparse-mla-blackwell](https://github.com/Libertai/vllm-sparse-mla-blackwell)
+(Apache-2.0) for rope-free sparse MLA on sm_120/121 plus the `vllm#54189` activation-scale fix.
+It is third-party code from a small project: read it at the pinned commit rather than trusting it.
+Retire the overlay once `vllm#55277` and `flashinfer#5075` land in a release image.

@@ -78,7 +78,7 @@ is not the one someone has measured.
 | `qwen38` | Qwen3.8-27B | FP8 | L40S | — (new) |
 | `qwen38-nvfp4` | Qwen3.8-27B | NVFP4 | RTX PRO 6000 | — (new) |
 | `qwen38-flash-next` | Qwen3.8-Flash-Next (125B-A6B MoE + 51B N-gram) | FP8 | **4×RTX PRO 6000** | — (new; upstream verified 4×H100) |
-| `glm53-flash-nvfp4` | GLM-5.3-Flash (321B-A18B MoE, **multimodal**) | NVFP4 | **4×RTX PRO 6000** | — (new; needs a plugin overlay) |
+| `glm53-flash-nvfp4` | GLM-5.3-Flash (321B-A18B MoE, **multimodal**) | NVFP4 | **4×RTX PRO 6000** | **4×RTX PRO 6000** (context capped at 98304) |
 | `gemma4-26b` | Gemma 4 26B-A4B (MoE) | FP8 | L40S | L40S |
 | `gemma4-31b` | Gemma 4 31B | FP8 | L40S | L40S |
 | `qwen36-35b` | Qwen3.6-35B-A3B (MoE) | FP8 | H100 | **H100** |
@@ -98,59 +98,32 @@ is not the one someone has measured.
 the B200's 10.0. At €1.65/h for a single card and €6.60 for four, against €4.50 and €18.00 for the
 B200 equivalents, it is the default lane wherever it works, and it usually has capacity when H100
 and B200 are sold out. Every FP8 profile runs on it, and so does **dense** NVFP4. Multi-GPU plans
-have **no NVLink**, so tensor parallelism runs over PCIe. Nothing has been measured on any of it
-yet, so these deployments print an untested warning and serve — record what you measure.
+have **no NVLink**, so tensor parallelism runs over PCIe. Only `glm53-flash-nvfp4` has a measured
+run so far; the other cc 12.0 lanes print an untested warning and serve — record what you measure.
 
 **What keeps the rest on B200 is sparse attention, not quantisation.** Every remaining large model
-here is a DeepSeek-style sparse MLA (DSA) architecture, and that has no working SM120 path:
-[vllm#55757](https://github.com/vllm-project/vllm/issues/55757) reports GLM-5.3, GLM-5.2 and
-DeepSeek-V4 unservable on 8× RTX PRO 6000, and it fails *late* — a short-prompt smoke test passes
-and only realistic prompt lengths break. `glm53-flash-nvfp4` gets around it by carrying a pinned,
-third-party kernel overlay; the DeepSeek profiles keep their cc 12.0 gate until the upstream fixes
-land, with the exact trigger recorded in each profile.
+here is a DeepSeek-style sparse MLA architecture with no working SM120 path
+([vllm#55757](https://github.com/vllm-project/vllm/issues/55757)), and it fails *late*: a
+short-prompt smoke test passes, realistic lengths break. `glm53-flash-nvfp4` gets around it with a
+pinned third-party kernel overlay; the DeepSeek profiles keep their cc 12.0 gate until the upstream
+fixes land, each recording its own trigger. NVFP4 MoE is no longer part of this — that CUTLASS
+grouped-GEMM fault is reported fixed on cu130. Profiles declare their limits via
+`min_compute_capability`, `unsupported_compute_capabilities` and
+`untested_compute_capabilities`. Detail:
+[docs/gpu-spinner.md](docs/gpu-spinner.md#what-runs-on-which-gpu).
 
-The older claim that NVFP4 MoE is broken on this card is **out of date**: that CUTLASS grouped-GEMM
-fault is reported fixed on cu130 builds, and much of the symptom was a separate silent fault
-([vllm#54189](https://github.com/vllm-project/vllm/issues/54189)) that zeroed every expert output.
-Profiles declare their own limits via `min_compute_capability`,
-`unsupported_compute_capabilities` and `untested_compute_capabilities`. Detail:
-[docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
+**Size the weights disk before the first pull.** The default 150 GB `/data` does not hold the large
+profiles — `qwen38-flash-next` is ~186 GB, `deepseek-v41-flash` ~511 GB, `deepseek-v4-pro-0813`
+~893 GB. Each profile states its own figure: set `WEIGHTS_SIZE_GB` and re-run
+`bin/spin persistent-init`, and remember the disk bills 24/7 until you remove it.
 
-**Qwen3.8-27B** is the newest generation here and is not yet measured on any tier. It is a dense
-hybrid-attention model (48 of 64 layers use linear attention) with a 262K native context, a vision
-tower, and an in-checkpoint MTP draft head. The NVFP4 build runs on RTX PRO 6000 because it is dense
-— see the profile comments for the measured KV-pool figures behind that choice.
-
-**Qwen3.8-Flash-Next** is a Qwen4 architecture preview: an ultra-sparse MoE with 6B active
-parameters, a separate 51B N-gram embedding table, and Qwen Sparse Attention. It needs its own
-container image and four GPUs, and its weights are ~186 GB — raise `WEIGHTS_SIZE_GB` before the
-first pull. Upstream verified it on 4×H100 with the N-gram table offloaded to host RAM, which is the
-plan this profile targets.
-
-**The two DeepSeek flagships are the heaviest profiles here.** `deepseek-v41-flash` needs four B200s
-(~511 GB of weights, of which 183 GiB is its Engram n-gram memory) and a dated vLLM nightly, because
-no release serves the architecture yet. `deepseek-v4-pro-0813` needs eight (~893 GB of weights) at
-roughly €36/h. Both need a much larger `WEIGHTS_SIZE_GB` than the default 150 GB — 600 and 1000
-respectively — and that disk bills 24/7 until you remove it. Read the profile comments before either
-first run.
-
-**Kimi K3 does not fit any UpCloud plan.** Its floor is 8× GB300 (2304 GB) and its weights alone are
-~1561 GB, against ~1538 GB on the largest plan here (8× B200). Its image is also a CUDA 13 build
-needing an r580+ driver. The profile exists so the requirement is recorded and so it works the day a
-large enough tier appears; until then every preflight refuses it.
-
-**The H100 remains a full option** and is where `qwen36-35b` was measured. RTX PRO 6000 is cheaper
-today, GPU pricing moves, and the H100 rows have measured numbers behind them.
-
-The "Measured on" column means the profile has a dated live run in
-[docs/validation.md](docs/validation.md) — context, KV pool, concurrency and VRAM. Where the main
-lane differs, that lane should work and warns when you deploy it: treat the deployment as a
-validation run, then capture `bin/spin validate` **and `bin/spin soak`** and add the row. Nine
+Where a main lane has no measured row, it should still work and warns when you deploy it: treat the
+run as a validation, capture `bin/spin validate` **and `bin/spin soak`**, and add the row. Nine
 profiles are gated behind `requires_review` (pass `--allow-unvalidated` to run anyway): `glm52`,
-`glm53` and `deepseek-v4-pro-0813` because an 8×B200 node costs ~€36/h to test; `glm53-flash`,
-`deepseek-v41-flash` and `deepseek-v4-flash-vision` because they need four B200s and a container
-image outside the shared pin; `k2-horizon-375b` and `glm53-flash-nvfp4` because they are large
-multi-GPU runs with no measurement behind them; and `kimi-k3` because no plan here fits it.
+`glm53` and `deepseek-v4-pro-0813` cost ~€36/h on an 8×B200 node; `glm53-flash`,
+`deepseek-v41-flash` and `deepseek-v4-flash-vision` need four B200s and a container image outside
+the shared pin; `k2-horizon-375b` and `glm53-flash-nvfp4` are large multi-GPU runs; and `kimi-k3`
+fits no plan here.
 
 All current model repos are **ungated** on Hugging Face, so no `HF_TOKEN` is required (but setting one
 in `.env` avoids the anonymous download throttle). **LoRA** adapter serving and **multi-model swap**
@@ -189,19 +162,18 @@ irreversible. Full detail: [docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
 
 ## Checking a profile before you pay for it
 
-`tests/check-vllm-compat.py` reads vLLM's source at the ref each pinned image corresponds to and
-verifies, for every profile, that the checkpoint's architecture is in that build's model registry,
-that the reasoning and tool-call parsers it names are registered, and that every flag it passes
-exists. It needs no GPU and runs in CI:
+For every profile, `tests/check-vllm-compat.py` reads vLLM's source at the ref its pinned image
+corresponds to and verifies that the checkpoint's architecture is in that build's model registry,
+that the parsers it names are registered, and that every flag it passes exists. No GPU needed; it
+runs in CI:
 
 ```bash
 python3 tests/check-vllm-compat.py            # all profiles
 python3 tests/check-vllm-compat.py qwen38     # just one
 ```
 
-Presence in the model registry does not imply support. A recipe often states a higher version
-floor than the release that first carried the architecture. Read the recipe, then pin
-accordingly.
+Presence in the registry does not imply support: a recipe often states a higher version floor than
+the release that first carried the architecture. Read the recipe, then pin accordingly.
 
 ## Other providers
 

@@ -26,7 +26,7 @@
   loop_control:
     label: "{{ item.name | default('<no name>') }}"
 
-# A preset is a menu of profiles, and llama-swap starts each one on THIS GPU. Single-model mode
+# A preset is a menu of profiles, and llama-swap starts each one on this GPU. Single-model mode
 # preflights its one profile in the vllm role; without the same check here a preset could include a
 # model this GPU cannot serve, and the failure would only surface on the first request to it.
 - name: Preflight — every model in the preset can run on this GPU

@@ -5,7 +5,7 @@
 # Deploy:  bin/spin up --swap-profile rtxpro6000
 #
 # The 96 GB card holds any one of these comfortably — twice the L40S, and enough headroom to serve
-# the FP8 models without the tight-fit caps they need on a 48 GB L40S. NVFP4 entries here are DENSE
+# the FP8 models without the tight-fit caps they need on a 48 GB L40S. NVFP4 entries here are dense
 # checkpoints only: NVFP4 *MoE* goes through a CUTLASS grouped GEMM that returns invalid output on
 # RTX Blackwell, so those profiles stay B200-only (see their unsupported_compute_capabilities).
 swap_profiles:

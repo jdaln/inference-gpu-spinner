@@ -5,9 +5,9 @@
 # --language-model-only drops the vision tower; --enforce-eager guards the hybrid linear-attention
 # (Mamba) state cache. On B200 you can drop --enforce-eager and raise ctx/seqs. Live-validated on
 # H100 2026-07-04 (262144 ctx, KV 3.42M tok, 13.03x, 74/81 GiB) — see docs/validation.md.
-# H100 80 GB (1.79 EUR/h) is the VALIDATED floor and stays the recommended tier. A 1x RTX PRO 6000
+# H100 80 GB (1.79 EUR/h) is the validated floor and stays the recommended tier. A 1x RTX PRO 6000
 # (96 GB, 1.65 EUR/h) also clears the VRAM gate and is slightly cheaper with more headroom, but has
-# NOT been measured for this profile — the deploy warns and serves. GPU prices move; keep both.
+# not been measured for this profile — the deploy warns and serves. GPU prices move; keep both.
 model_repo: "Qwen/Qwen3.6-35B-A3B-FP8"
 served_name: "qwen3.6-35b-a3b-fp8"
 tensor_parallel_size: 1

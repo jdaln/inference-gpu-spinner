@@ -1,47 +1,41 @@
 ---
 # K2-Horizon-375B-A23B (IFM) in FP8 — frontier-scale MoE, 379B stored parameters including
-# embeddings with 26.7B active per token. 61 layers at hidden 6144, 192 experts with 8 active,
-# text-only, 524,288 native context. The FP8 build is ~391 GB on disk across 20 shards
+# embeddings, 26.7B active per token. 61 layers at hidden 6144, 192 experts with 8 active,
+# text-only, 524,288 native context. The FP8 build is ~391 GB across 20 shards
 # (compressed-tensors); the BF16 original is ~758 GB.
 #
-# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+# PINNED IMAGE (required): K2HorizonForCausalLM is in neither v0.23.0 nor v0.29.0 — it reached vLLM
+# main after v0.29.0, so this profile uses the same dated nightly as deepseek-v41-flash. Replace
+# both with a release tag once one carries the architecture.
 #
-# PINNED IMAGE (required): K2HorizonForCausalLM is in neither v0.23.0 nor v0.29.0. It reached vLLM
-# main after the v0.29.0 release, so this profile uses the same dated nightly as
-# deepseek-v41-flash. Replace both with a release tag once one carries the architecture.
-#
-# WHY FP8 AT TP8 ON RTX PRO 6000. recipes.vllm.ai/IFM/K2-Horizon-375B-A23B serves the BF16 repo
-# with --tensor-parallel-size 8 --dtype bfloat16, and its only verified run is an 8-GPU MI355X
-# node. At ~758 GB that would need 8x B200 here, about 36 EUR/h. The FP8 build is ~391 GB
-# (367.8B params in FP8 plus 11.3B in BF16), which changes what fits:
+# WHY FP8 AT TP8 ON RTX PRO 6000. recipes.vllm.ai/IFM/K2-Horizon-375B-A23B serves the BF16 repo at
+# --tensor-parallel-size 8 --dtype bfloat16, verified only on an 8-GPU MI355X node. At ~758 GB that
+# would need 8x B200 here, ~36 EUR/h. The FP8 build is ~391 GB (367.8B in FP8 plus 11.3B in BF16),
+# which changes what fits:
 #   8x RTX PRO 6000   768 GB, 13.20 EUR/h  <- this profile: ~48.8 GB/rank, ~36 GB of KV per rank
 #   4x B200           768 GB, 18.00 EUR/h  <- the previous lane, at TP=4
-#   4x RTX PRO 6000   384 GB               <- does NOT fit: 391 GB of weights alone
-# TP=8 is both cheaper than the 4x B200 lane and closer to the published run, so the TP=4
-# arrangement this profile used to carry (chosen only to halve the B200 bill) has no reason left.
-#
-# The 4x B200 path is still reachable without editing this file — extra vars outrank a profile:
+#   4x RTX PRO 6000   384 GB               <- does not fit: 391 GB of weights alone
+# TP=8 is cheaper than the 4x B200 lane and closer to the published run. That lane is still one
+# command away, since extra vars outrank a profile:
 #   bin/spin up --model k2-horizon-375b --allow-unvalidated \
 #     --plan GPU-48xCPU-960GB-4xB200 -e tensor_parallel_size=4
 #
-# NO NVLINK on the RTX PRO 6000 plans: TP=8 runs over PCIe across eight cards, which is the
-# heaviest communication pattern in this repo and is unmeasured. If engine init hangs inside NCCL
-# rather than failing, add NCCL_P2P_DISABLE: 1 to extra_env — it costs throughput, so do not set
-# it pre-emptively. Attention here is standard partial-RoPE, not DeepSeek-style sparse MLA, so
-# this profile is unaffected by the SM120 sparse-attention gap that blocks the GLM and DeepSeek
-# MoE profiles (vllm-project/vllm#55757).
+# NO NVLINK on the RTX PRO 6000 plans: TP=8 over PCIe across eight cards is the heaviest
+# communication pattern in this repo, and unmeasured. If engine init hangs inside NCCL rather than
+# failing, add NCCL_P2P_DISABLE: 1 to extra_env — it costs throughput, so not pre-emptively.
+# Attention here is standard partial-RoPE, not sparse MLA, so the SM120 gap that blocks the GLM and
+# DeepSeek profiles (vllm-project/vllm#55757) does not apply.
 #
-# max_model_len 131072 is the value the verified MI355X run used, not the checkpoint's 524,288
-# native limit. With ~48.8 GB of weights per rank against 95 GB there is headroom to raise it; do
-# that once a live run shows the KV pool vLLM reports at startup.
+# max_model_len 131072 is what the verified MI355X run used, not the native 524,288. With ~48.8 GB
+# of weights per rank against 95 GB there is headroom to raise it once a live run shows the KV pool.
 #
-# --trust-remote-code and --enable-expert-parallel are both from the recipe's launch command.
-# Reasoning is selectable per request through chat_template_kwargs {"reasoning_effort": "..."} with
-# high (the default), medium and low, or server-wide via --default-chat-template-kwargs. The model
-# card's sampling suggestion is temperature 1.0 with top_p 0.95.
+# --trust-remote-code and --enable-expert-parallel come from the recipe's launch command. Reasoning
+# effort is per request via chat_template_kwargs {"reasoning_effort": "high|medium|low"} (high is
+# the default) or server-wide via --default-chat-template-kwargs. The model card suggests
+# temperature 1.0 with top_p 0.95.
 #
-# DISK: ~391 GB of weights against a default 150 GB /data. Set WEIGHTS_SIZE_GB to at least 450 and
-# re-run bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 99/mo standing.
+# DISK: ~391 GB against a default 150 GB /data. Set WEIGHTS_SIZE_GB to at least 450 and re-run
+# bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 99/mo standing.
 model_repo: "IFM/K2-Horizon-375B-A23B-FP8"
 served_name: "k2-horizon-375b"
 vllm_image_override: "vllm/vllm-openai:cu129-nightly-cd10ed6f9f6b37a8ace9cf380007e66fe12ec0c3"

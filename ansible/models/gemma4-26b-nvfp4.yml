@@ -28,7 +28,7 @@ min_compute_capability: 10.0     # NVFP4 needs Blackwell — no L4/L40S/H100
 unsupported_compute_capabilities: [12.0]
 unsupported_reason: >-
   NVFP4 MoE on RTX Blackwell (cc 12.0) goes through the CUTLASS grouped block-scaled GEMM, which
-  returns invalid output on the cu129 build this profile pins. RE-TEST THIS: the fault is reported
+  returns invalid output on the cu129 build this profile pins. Re-test this: the fault is reported
   fixed on cu130 (flashinfer-ai/flashinfer#2708, now in vLLM's FlashInfer pin), and a separate
   silent fault, vllm-project/vllm#54189, accounted for much of the same symptom. A cu130 image
   needs an r580+ host driver — check what the deploy reports as gpu_driver_major first

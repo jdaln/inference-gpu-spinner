@@ -11,7 +11,7 @@ For each ansible/models/*.yml:
   2. every --reasoning-parser / --tool-call-parser value is registered at that ref
   3. every long CLI flag the profile passes appears in that ref's argument definitions
 
-Being in the registry is NOT the same as being supported: a recipe may state a higher version floor
+Being in the registry is not the same as being supported: a recipe may state a higher version floor
 than the release that first carried the architecture. Read the recipe, then pin accordingly.
 
 Usage:  python3 tests/check-vllm-compat.py [profile ...]

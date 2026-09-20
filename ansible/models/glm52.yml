@@ -25,7 +25,7 @@ extra_vllm_args:
   - "--kv-cache-dtype"
   - "fp8_e4m3"
 min_plan: "GPU-96xCPU-1920GB-8xB200"
-min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB). NOT 76: at that value an 8x RTX PRO 6000
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB). Not 76: at that value an 8x RTX PRO 6000
                    # node (95 GB/GPU) clears the gate and then OOMs on ~756 GB of weights against a
                    # 684 GB budget, after the whole download. The file comment above says 8x96 does
                    # not fit; this is the check that enforces it.

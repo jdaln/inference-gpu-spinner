@@ -6,58 +6,51 @@
 # head. Routing is 6 of 384 experts plus one shared, with a separate routing bias for image spans.
 # 1,048,576 context via YaRN factor 16 over a 65,536-token training window.
 #
-# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
-#
 # PINNED IMAGE (required): no pip wheel serves this architecture. It landed on vLLM main in
-# vllm-project/vllm#56228, so any nightly from 2026-09-10 onwards carries it; v0.29.0 predates that.
-# The tag below is an immutable dated nightly rather than the floating :nightly, so a spin-up two
-# weeks from now gets the same engine. Replace it with a v0.30.0 release tag once one exists.
+# vllm-project/vllm#56228, so any nightly from 2026-09-10 carries it; v0.29.0 predates it. The tag
+# below is an immutable dated nightly, not the floating :nightly, so a spin-up two weeks from now
+# gets the same engine. Replace it with a v0.30.0 release tag once one exists.
 #
-# MEMORY. The checkpoint is ~511 GB on disk (476 GiB) and the recipe's floor is 614 GB of VRAM,
-# which is one GB200 NVL4 tray at TP4 — 4x B200 (768 GB) is the equivalent plan here. The Engram
-# tables alone are 196.6B parameters (~183 GiB) and dominate everything except the experts. KV is a
-# small share of that budget: weights and batch size set the capacity limit, not the cache.
+# MEMORY. ~511 GB on disk (476 GiB) against the recipe's 614 GB VRAM floor — one GB200 NVL4 tray at
+# TP4, which 4x B200 (768 GB) matches here. The Engram tables alone are 196.6B parameters (~183 GiB)
+# and dominate everything but the experts. Weights and batch size set the capacity limit, not KV.
 #
-# B200 FOR NOW, and the closest of the DeepSeek profiles to an RTX PRO 6000 lane. 8x RTX PRO 6000
-# is 760 GB against the recipe's 614 GB floor, at 13.20 EUR/h versus 18.00 for 4x B200 — so the
-# lane would be TP=8 on GPU-128xCPU-640GB-8xRTXPRO6000. 4x RTX PRO 6000 (380 GB) does not fit.
+# B200 FOR NOW, and the closest DeepSeek profile to an RTX PRO 6000 lane: 8x RTX PRO 6000 is 760 GB
+# against the 614 GB floor at 13.20 EUR/h versus 18.00, so the lane would be TP=8 on
+# GPU-128xCPU-640GB-8xRTXPRO6000. 4x RTX PRO 6000 (380 GB) does not fit.
 #
-# WHAT ACTUALLY BLOCKS IT. Not the MXFP4 experts: that grouped block-scaled GEMM fault is reported
-# fixed on cu130 builds, and much of the "4-bit MoE returns garbage" history turned out to be
-# vllm-project/vllm#54189 (an uninitialised activation scale zeroing every expert) rather than the
-# kernel. The live blocker is sparse attention — vllm-project/vllm#55757 reports DeepSeek-style
-# sparse MLA unservable on sm_120, passing a short-prompt smoke test and failing at realistic
-# prompt lengths.
+# WHAT BLOCKS IT. Not the MXFP4 experts: that grouped block-scaled GEMM fault is reported fixed on
+# cu130, and much of the "4-bit MoE returns garbage" history was vllm-project/vllm#54189 (an
+# uninitialised activation scale zeroing every expert). The live blocker is sparse attention —
+# vllm-project/vllm#55757 reports DeepSeek-style sparse MLA unservable on sm_120, passing a
+# short-prompt smoke test and failing at realistic lengths.
 #
-# WHEN TO OPEN THE LANE. vllm-project/vllm#54929 covers exactly this model's geometry (the 512
-# NoPE + 64 RoPE = 576 head layout) and, unlike #41834, is a small mergeable PR — 12 files, marked
-# mergeable as of 2026-09-19. When it lands in a release image: drop
-# unsupported_compute_capabilities, set tensor_parallel_size to 8, min_plan to
-# GPU-128xCPU-640GB-8xRTXPRO6000 and min_vram_gb to 90. Note the profile-level overlay route in
-# glm53-flash-nvfp4.yml exists if you would rather not wait — that plugin is NoPE-specific and will
-# NOT serve this geometry, so it would need a different one.
+# WHEN TO OPEN THE LANE. vllm-project/vllm#54929 covers this model's geometry (512 NoPE + 64 RoPE =
+# 576 head layout) and, unlike #41834, is a small mergeable PR (12 files, mergeable 2026-09-19).
+# When it lands in a release image: drop unsupported_compute_capabilities, set
+# tensor_parallel_size 8, min_plan GPU-128xCPU-640GB-8xRTXPRO6000, min_vram_gb 90. The overlay route
+# in glm53-flash-nvfp4.yml is NoPE-specific and will not serve this geometry.
 #
-# --language-model-only skips the vision encoder entirely, which drops the ViT and aligner from the
-# load and frees that VRAM for KV. The verified GB200 runs (TP4 and 1P1D) were text-only, so that is
-# what this profile reproduces. For image input, remove that flag and consider
-# --mm-encoder-tp-mode data, which runs the ViT data-parallel: at 32 layers and hidden 1024 the
-# encoder is small enough that tensor-parallel communication costs more than it saves.
+# --language-model-only skips the vision encoder, freeing its VRAM for KV; the verified GB200 runs
+# (TP4 and 1P1D) were text-only, so that is what this profile reproduces. For image input, remove it
+# and consider --mm-encoder-tp-mode data: at 32 layers and hidden 1024 the ViT is small enough that
+# tensor-parallel communication costs more than it saves.
 #
 # --tokenizer-mode / --reasoning-parser / --tool-call-parser are all deepseek_v41, not deepseek_v4.
 #
-# REASONING. Thinking is ON by default at effort 50. Callers control it per request via
-# chat_template_kwargs: thinking (bool) and reasoning_effort, which takes low (25), high (50),
-# xhigh (75), max (100) or an integer 1-100. Note the DeepSeek API maps low/high/max to 50/75/100
-# while vLLM maps low/high/xhigh/max to 25/50/75/100 — pass an integer if you need parity.
+# REASONING is on by default at effort 50. Callers set chat_template_kwargs: thinking (bool) and
+# reasoning_effort — low (25), high (50), xhigh (75), max (100) or an integer 1-100. The DeepSeek
+# API maps low/high/max to 50/75/100 while vLLM maps low/high/xhigh/max to 25/50/75/100, so pass an
+# integer if you need parity.
 #
-# DSpark: the checkpoint carries a fused draft head that adds roughly 14B parameters to the load.
-# Left OFF so the first validation run tests the model alone. Enable with:
+# DSpark: the fused draft head adds roughly 14B parameters to the load. Left off so the first
+# validation run tests the model alone. Enable with:
 #   extra_vllm_args += ["--speculative-config",
 #     '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}']
 #
-# DISK: ~511 GB of weights against a default 150 GB /data. Set WEIGHTS_SIZE_GB to at least 600 and
-# re-run bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 132/mo standing
-# while the disk exists — bin/spin down removes it by default, at the cost of a fresh ~70 min pull.
+# DISK: ~511 GB against a default 150 GB /data. Set WEIGHTS_SIZE_GB to at least 600 and re-run
+# bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 132/mo while the disk
+# exists — bin/spin down removes it by default, at the cost of a fresh ~70 min pull.
 model_repo: "deepseek-ai/DeepSeek-V4.1-Flash"
 served_name: "deepseek-v41-flash"
 vllm_image_override: "vllm/vllm-openai:cu129-nightly-cd10ed6f9f6b37a8ace9cf380007e66fe12ec0c3"

@@ -1,12 +1,12 @@
 ---
 # Qwen3.6-27B in NVFP4 — Blackwell-class GPUs (B200 or RTX PRO 6000). Official NVIDIA ModelOpt
-# checkpoint (nvidia/Qwen3.6-27B-NVFP4, Apache-2.0, "ready for inference with vLLM"). DENSE, so it
+# checkpoint (nvidia/Qwen3.6-27B-NVFP4, Apache-2.0, "ready for inference with vLLM"). Dense, so it
 # uses the NVFP4 scaled-mm path rather than the grouped-GEMM MoE kernels that misbehave on RTX
 # Blackwell — which is why this profile runs on cc 12.0 and the NVFP4 *MoE* profiles do not.
 # Quant auto-detected (no --quantization). --language-model-only drops the vision tower;
 # --enforce-eager guards the hybrid (Mamba) state cache (drop once stable on Blackwell).
 # Live-validated on B200 2026-07-04 (262144, KV 4.41M tok, 16.84x, 169/183 GiB); re-served via
-# llama-swap 2026-07-05. NOT yet validated on RTX PRO 6000: ~21 GB of weights leave roughly 70 GB
+# llama-swap 2026-07-05. Not yet validated on RTX PRO 6000: ~21 GB of weights leave roughly 70 GB
 # of the 96 GB card for KV, so full context should hold, but the numbers above are B200 numbers.
 model_repo: "nvidia/Qwen3.6-27B-NVFP4"
 served_name: "qwen3.6-27b-nvfp4"
@@ -22,7 +22,7 @@ extra_vllm_args:
   - "--enforce-eager"
   - "--kv-cache-dtype"
   - "fp8"
-min_plan: "GPU-12xCPU-240GB-1xB200"   # the VALIDATED tier; 1xRTXPRO6000 also passes, untested
+min_plan: "GPU-12xCPU-240GB-1xB200"   # the validated tier; 1xRTXPRO6000 also passes, untested
 min_vram_gb: 40                  # ~21 GB weights + KV; keeps an L4/L40S-sized card out
 min_compute_capability: 10.0     # Blackwell or newer: B200 (cc 10.0) and RTX PRO 6000 (cc 12.0)
 untested_compute_capabilities: [12.0]   # dense NVFP4 should run on RTX PRO 6000; not yet measured

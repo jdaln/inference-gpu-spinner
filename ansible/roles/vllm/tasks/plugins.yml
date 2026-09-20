@@ -1,17 +1,15 @@
 ---
-# Out-of-tree vLLM plugins, built once per pinned commit and mounted read-only.
-#
-# Some GPU generations need a kernel that no released vLLM image carries yet. A profile lists such a
-# package in vllm_plugins; each entry is cloned at a PINNED COMMIT, built inside that profile's own
-# image (the .so is libtorch- and Python-ABI-tagged, so it has to be built there), and left on the
-# persistent disk so the build survives teardown and happens once per commit.
-# compose.yml.j2 mounts the result read-only and puts it on PYTHONPATH.
+# Out-of-tree vLLM plugins, for GPU generations needing a kernel no released image carries yet.
+# A profile lists the package in vllm_plugins; each entry is cloned at a pinned commit, built inside
+# that profile's own image (the .so is libtorch- and Python-ABI-tagged, so it has to be), and left
+# on the persistent disk, so the build survives teardown and happens once per commit.
+# compose.yml.j2 mounts the result read-only on PYTHONPATH.
 #
 # Plugins register through vLLM's vllm.general_plugins entry point, so no vLLM file is patched, and
 # a well-behaved one is inert unless the profile also sets its environment variable.
 #
-# THIRD-PARTY CODE. Read the source at the pinned commit before adding an entry, pin a full SHA
-# rather than a branch, and record in the profile why the overlay is there and what would retire it.
+# THIRD-PARTY CODE. Read the source at the pinned commit before adding an entry, pin a full SHA not
+# a branch, and record in the profile why the overlay is there and what would retire it.
 
 - name: Ensure the plugin build root exists on the persistent disk
   ansible.builtin.file:

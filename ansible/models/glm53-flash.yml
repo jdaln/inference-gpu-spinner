@@ -1,38 +1,34 @@
 ---
 # GLM-5.3-Flash (Z.ai) — ~321B total / 18B active multimodal MoE, 45 layers mixing KDA linear
-# attention with NoPE sparse MLA, routing each token through 8 of 288 experts. Image and video
-# input, 1,048,576 native context, one MTP draft layer. Native FP8 weights, ~306 GiB.
+# attention with NoPE sparse MLA, 8 of 288 experts per token. Image and video input, 1,048,576
+# native context, one MTP draft layer. Native FP8 weights, ~306 GiB.
 #
-# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+# PINNED IMAGE (required): Glm5NextForConditionalGeneration is in neither v0.23.0 nor v0.29.0 — the
+# recipe says to use Docker until the integration reaches the public repo, so this pins
+# vllm/vllm-openai:glm53-flash. That build also satisfies the FlashInfer 0.6.17 floor NoPE sparse
+# MLA needs.
 #
-# PINNED IMAGE (required): Glm5NextForConditionalGeneration is in neither v0.23.0 nor v0.29.0 —
-# the recipe says to use Docker until the integration reaches the public repo. The dedicated
-# vllm/vllm-openai:glm53-flash image is what this profile pins. That build also satisfies the
-# FlashInfer 0.6.17 floor that NoPE sparse MLA needs.
-#
-# 4x B200. The recipe's verified configuration is TP4 on one GB200 tray (768 GB), which 4x B200
-# matches — ~18 EUR/h, hence requires_review. Hopper is supported by the implementation but CANNOT
-# use an FP8 KV cache for this model and must run BF16 KV, so min_compute_capability pins the
-# Blackwell path that the flags below assume.
+# 4x B200 matches the recipe's verified TP4-on-one-GB200-tray (768 GB) configuration — ~18 EUR/h,
+# hence requires_review. Hopper is supported by the implementation but cannot use an FP8 KV cache
+# for this model and must run BF16 KV, so min_compute_capability pins the Blackwell path the flags
+# below assume.
 #
 # MTP: one draft layer is in the checkpoint and the recipe's TP4 command enables it with 5 tokens.
-# Left OFF so the first validation run tests the model alone. Enable with:
+# Left off so the first validation run tests the model alone. Enable with:
 #   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":5}']
 #
-# Vision is left ON: unlike the Qwen profiles here there is no --language-model-only equivalent in
-# the recipe's command, and the model's multimodal path is part of what it is for. Serving is
-# text-first either way; images just work if a client sends them.
+# Vision stays on: the recipe's command has no --language-model-only equivalent, and the multimodal
+# path is part of what this model is for. Serving is text-first either way.
 #
-# DISK: ~328 GB of weights. Set WEIGHTS_SIZE_GB to at least 400 and re-run
-# bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 88/mo standing.
+# DISK: ~328 GB of weights. Set WEIGHTS_SIZE_GB to at least 400 and re-run bin/spin persistent-init
+# before the first pull. At MaxIOPS that is ~EUR 88/mo standing.
 #
-# NOT ON RTX PRO 6000 — use glm53-flash-nvfp4.yml instead. This model's MLA layers are rope-free
-# (qk_rope_head_dim: 0) and no stock vLLM build has an SM120 kernel for that shape; three failure
-# modes are catalogued in vllm-project/vllm#53963. The trap is that it does not fail cleanly:
-# vllm-project/vllm#55757 reports DSA models passing a short-prompt smoke test on sm_120 and only
-# dying at realistic prompt lengths, so unsupported_compute_capabilities refuses it up front.
-# glm53-flash-nvfp4.yml serves the same model on 4x RTX PRO 6000 at 6.60 EUR/h by carrying an
-# out-of-tree kernel; this profile stays the plain, overlay-free FP8 path on B200.
+# NOT ON RTX PRO 6000 — use glm53-flash-nvfp4.yml, which serves the same model on 4x RTX PRO 6000 at
+# 6.60 EUR/h by carrying an out-of-tree kernel. This profile stays the plain, overlay-free FP8 path.
+# The MLA layers are rope-free (qk_rope_head_dim: 0) and no stock vLLM build has an SM120 kernel for
+# that shape (three failure modes in vllm-project/vllm#53963). It does not fail cleanly either:
+# vllm-project/vllm#55757 reports DSA models passing a short-prompt smoke test on sm_120 and dying
+# at realistic lengths, so unsupported_compute_capabilities refuses it up front.
 model_repo: "zai-org/GLM-5.3-Flash"
 served_name: "glm53-flash"
 vllm_image_override: "vllm/vllm-openai:glm53-flash"

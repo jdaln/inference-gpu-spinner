@@ -46,7 +46,7 @@ jobs:
           jq -e 'has("gpu")' /tmp/inv.json > /dev/null
       - name: bin/spin default profile exists + every profile renders
         run: |
-          default=$(sed -n 's/.*VLLM_MODEL:-\([a-z0-9-]*\).*/\1/p' bin/spin | head -1)
+          default=$(sed -n 's/.*VLLM_MODEL:-\([a-z0-9-]*\).*/\1/p' bin/spin bin/lib/*.sh | head -1)
           echo "bin/spin default profile: $default"
           test -f "ansible/models/$default.yml" || { echo "::error::bin/spin defaults to missing profile '$default'"; exit 1; }
           for f in ansible/models/*.yml; do
@@ -95,6 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: bash syntax check
-        run: bash -n bin/spin
+        run: for f in bin/spin bin/lib/*.sh; do bash -n "$f"; done
       - name: shellcheck
-        run: shellcheck bin/spin   # ubuntu-latest ships shellcheck
+        # -x follows the `. bin/lib/*.sh` sources, so the CLI is checked as one unit.
+        run: shellcheck -x bin/spin   # ubuntu-latest ships shellcheck

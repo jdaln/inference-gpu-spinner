@@ -1,36 +1,34 @@
 ---
 # Qwen3.8-27B in FP8 (official Qwen block-scaled build, ~31 GB weights, Apache-2.0).
-# Dense 27B on the Qwen3.5 hybrid backbone: 64 layers laid out as 16 x (3 x Gated DeltaNet -> FFN,
-# then 1 x Gated Attention -> FFN), so only 16 layers run full attention (full_attention_interval 4).
-# Native 262,144 context, extensible to 1M with YaRN. Multimodal (image + video) and thinking-capable.
-# Quantization is auto-detected from the checkpoint config (no --quantization flag).
+# Dense 27B on the Qwen3.5 hybrid backbone: 64 layers as 16 x (3 x Gated DeltaNet -> FFN, then
+# 1 x Gated Attention -> FFN), so only 16 run full attention (full_attention_interval 4). Native
+# 262,144 context, 1M with YaRN. Multimodal (image + video) and thinking-capable. Quantization is
+# auto-detected from the checkpoint config (no --quantization flag).
 #
-# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+# --reasoning-parser qwen3 is not optional: the chat template opens every assistant turn with
+# <think>, so without it the reasoning block lands in message.content and a short max_tokens budget
+# is spent before the answer starts (recipes.vllm.ai/Qwen/Qwen3.8-27B).
+# --tool-call-parser is qwen3_xml for this generation, not the qwen3_coder qwen36-35b uses.
+# --language-model-only drops the vision tower and measurably enlarges the KV pool (recipe:
+# 91,022 -> 135,926 tokens at 32K on a 31.4 GiB card).
+# --enforce-eager is here for the same reason as on qwen36: on a 48 GB L40S, CUDA graph capture
+# allocates outside the --gpu-memory-utilization budget, so a tight fit dies in capture however that
+# fraction is set. Drop it on a 96 GB RTX PRO 6000 or a B200.
 #
-# --reasoning-parser qwen3 is NOT optional: the chat template opens every assistant turn with
-# <think>, so without it the whole reasoning block lands in message.content and a short max_tokens
-# budget is spent before the answer starts (vLLM recipe, recipes.vllm.ai/Qwen/Qwen3.8-27B).
-# --tool-call-parser is qwen3_xml for this generation, not the qwen3_coder used by qwen36-35b.
-# --language-model-only drops the vision tower for text-only serving and measurably enlarges the KV
-# pool (recipe: 91,022 -> 135,926 tokens at 32K on a 31.4 GiB card).
-# --enforce-eager is here for the same reason it is on qwen36: on a 48 GB L40S, CUDA graph capture
-# allocates OUTSIDE the --gpu-memory-utilization budget, so a tight fit dies in capture and raising
-# or lowering that fraction does not help. Drop it on a 96 GB RTX PRO 6000 or a B200.
+# max_model_len 131072 is a starting point, not the model's limit. FP8 weights are ~31 GB against an
+# L40S's ~46 GiB usable — between qwen36 (27 GB, serves 262144 here) and gemma4-31b (33 GB, capped
+# to 65536). Raise it toward the native 262144 on a larger card, or once a live L40S run shows the
+# KV pool has room.
 #
-# max_model_len 131072 is a deliberate starting point, not the model's limit. FP8 weights are ~31 GB
-# against an L40S's ~46 GiB usable, which is between qwen36 (27 GB, serves 262144 here) and
-# gemma4-31b (33 GB, capped to 65536 here). Raise toward the native 262144 on a larger card, or once
-# a live L40S run shows the KV pool has room.
-#
-# MTP: the checkpoint carries a Multi-Token Prediction head that works in every precision
-# (measured acceptance 0.771 for FP8). It is left OFF so the first validation run tests the model
-# alone — a failure with speculation on does not tell you which half broke. Enable with:
+# MTP: the checkpoint carries a Multi-Token Prediction head that works in every precision (measured
+# acceptance 0.771 for FP8). Left off so the first validation run tests the model alone — a failure
+# with speculation on does not tell you which half broke. Enable with:
 #   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":3}']
 # and read vllm:spec_decode_num_{accepted,draft}_tokens_total to confirm the drafter is used.
 #
-# Sampling (from the model card, for callers — not set here): thinking mode temperature 1.0,
-# top_p 0.95, top_k 20; non-thinking temperature 0.7, top_p 0.80, top_k 20, presence_penalty 1.5.
-# Reasoning depth is per-request via chat_template_kwargs {"reasoning_effort": "xhigh|medium|low"}.
+# Sampling (model card, for callers — not set here): thinking mode temperature 1.0, top_p 0.95,
+# top_k 20; non-thinking 0.7 / 0.80 / 20 with presence_penalty 1.5. Reasoning depth is per request
+# via chat_template_kwargs {"reasoning_effort": "xhigh|medium|low"}.
 model_repo: "Qwen/Qwen3.8-27B-FP8"
 served_name: "qwen3.8-27b-fp8"
 tensor_parallel_size: 1

@@ -1,54 +1,48 @@
 ---
-# DeepSeek-V4-Pro-0813 — the flagship of the V4 family: 1.6T total / 49B active MoE, 61 layers at
-# hidden 7168, 384 routed experts with 6 active plus one shared. Hybrid attention stack (Compressed
-# Sparse Attention + Heavily Compressed Attention) with Manifold-Constrained Hyper-Connections,
-# reaching 27% of V3.2's per-token FLOPs and 10% of its KV cache at 1M context. Checkpoint is
-# FP4+FP8 mixed: MoE expert weights in FP4, attention / norm / router in FP8. 1,048,576 native
-# context via YaRN. The 0813 release supersedes the preview and adds a fused DSpark draft module.
+# DeepSeek-V4-Pro-0813 — flagship of the V4 family: 1.6T total / 49B active MoE, 61 layers at hidden
+# 7168, 384 routed experts with 6 active plus one shared. Hybrid attention (Compressed Sparse +
+# Heavily Compressed) with Manifold-Constrained Hyper-Connections, reaching 27% of V3.2's per-token
+# FLOPs and 10% of its KV cache at 1M context. FP4+FP8 mixed: MoE experts FP4, attention / norm /
+# router FP8. 1,048,576 native context via YaRN. 0813 supersedes the preview and adds fused DSpark.
 #
-# NEW PROFILE — no live run on this account. validated: false makes the deploy say so.
+# THE MOST EXPENSIVE PROFILE HERE: eight GPUs and ~893 GB of weights, i.e.
+# GPU-96xCPU-1920GB-8xB200 at ~36 EUR/h — the glm52 tier, so requires_review gates it the same way
+# (the vllm role refuses without --allow-unvalidated). Read the disk note below before the first
+# run; the standing cost of that disk is the largest in this repo.
 #
-# THIS IS THE MOST EXPENSIVE PROFILE HERE. It needs eight GPUs and ~893 GB of weights. On UpCloud
-# that is GPU-96xCPU-1920GB-8xB200 at ~36 EUR/h, the same tier as glm52, so requires_review gates it
-# the same way: the vllm role refuses without --allow-unvalidated. Read the disk note below before
-# the first run — the standing cost of the weights disk is larger than anything else in this repo.
+# PINNED IMAGE. Fused-DSpark checkpoints need vLLM 0.25.0+; the shared pin is v0.23.0, so this uses
+# v0.29.0, the newest release.
 #
-# PINNED IMAGE. The fused-DSpark checkpoints need vLLM 0.25.0 or newer; the shared pin is v0.23.0.
-# v0.29.0 is the newest release and is what this profile uses.
+# WHY EIGHT GPUs. The recipe is explicit that the mixed-precision checkpoint does not fit one GB200
+# NVL4 tray (4 GPUs, 768 GB) and must run across eight; its recommended deployments are all 8-GPU
+# (B300, H200, MI355X). 8x B200 gives 1536 GB against ~893 GB of weights.
 #
-# WHY EIGHT GPUs. The recipe is explicit that the mixed-precision checkpoint does not fit one
-# GB200 NVL4 tray (4 GPUs, 768 GB) and must run across eight. Its recommended deployments are all
-# 8-GPU: B300, H200 and MI355X. 8x B200 gives 1536 GB against ~893 GB of weights.
-#
-# TOPOLOGY. This profile uses plain TP=8, which is the shape the MI355X reference command uses and
-# the same shape glm52 uses here. The recipe's own recommendation for 8-GPU nodes is DP + EP
-# (--data-parallel-size 8) rather than tensor parallel; if throughput matters more than a first
-# successful serve, that is the change to make.
+# TOPOLOGY. Plain TP=8, the shape the MI355X reference command and glm52 here both use. The recipe
+# recommends DP + EP (--data-parallel-size 8) for 8-GPU nodes instead; that is the change to make
+# once throughput matters more than a first successful serve.
 #
 # B200 ONLY. The FP4 MoE experts take the grouped block-scaled GEMM path that returns invalid output
 # on RTX Blackwell (cc 12.0) with a cu129 build, and an 8x RTX PRO 6000 node would be 768 GB with no
-# NVLink anyway — too small for this checkpoint and the wrong interconnect for TP=8.
+# NVLink — too small for this checkpoint and the wrong interconnect for TP=8.
 #
-# CONTEXT. max_model_len 393216 is the documented floor for the model's "max" reasoning mode: below
-# 384K tokens that mode truncates. The recipe caps 8-GPU H200 nodes at 800000 to leave KV headroom;
-# 8x B200 has more room than that, so raising this toward 800000 is the first thing to try once a
-# live run shows the KV pool. Native is 1,048,576.
+# CONTEXT. max_model_len 393216 is the documented floor for the "max" reasoning mode: below 384K
+# that mode truncates. The recipe caps 8-GPU H200 nodes at 800000 for KV headroom; 8x B200 has more
+# room, so raising toward 800000 is the first thing to try once a live run shows the KV pool. Native
+# is 1,048,576.
 #
-# REASONING. Three effort levels on 0813, named low / high / max. DeepSeek recommends
-# temperature 1.0 with top_p 0.95 for agentic scenarios and 1.0 otherwise, and allowing up to 384K
-# output tokens. Callers select the level per request.
+# REASONING: three effort levels on 0813 (low / high / max), selected per request. DeepSeek
+# recommends temperature 1.0, top_p 0.95 for agentic use and 1.0 otherwise, and up to 384K output
+# tokens.
 #
-# DSpark: the 0813 checkpoint carries a fused draft module. Left OFF so the first validation run
-# tests the model alone — at this hourly rate a failure that could be either half is expensive.
-# Enable with:
+# DSpark: the fused draft module is left off so the first validation run tests the model alone — at
+# this hourly rate a failure that could be either half is expensive. Enable with:
 #   extra_vllm_args += ["--speculative-config",
 #     '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}']
 #
-# DISK: ~893 GB of weights. Set WEIGHTS_SIZE_GB to at least 1000 and re-run
-# bin/spin persistent-init before the first pull. At MaxIOPS a 1000 GB disk is ~EUR 220/mo standing,
-# billed whether or not a GPU exists — far more than the rest of this repo assumes. Either budget
-# for it deliberately or let bin/spin down decommission the disk each evening and accept a fresh
-# ~2 h pull next time.
+# DISK: ~893 GB of weights. Set WEIGHTS_SIZE_GB to at least 1000 and re-run bin/spin persistent-init
+# before the first pull. At MaxIOPS a 1000 GB disk is ~EUR 220/mo standing, billed whether or not a
+# GPU exists. Either budget for that or let bin/spin down decommission it each evening and accept a
+# fresh ~2 h pull.
 model_repo: "deepseek-ai/DeepSeek-V4-Pro-0813"
 served_name: "deepseek-v4-pro-0813"
 vllm_image_override: "vllm/vllm-openai:v0.29.0-cu129-ubuntu2404"
