@@ -13,17 +13,18 @@
 #
 # MEMORY. ~511 GB on disk (476 GiB) against the recipe's 614 GB VRAM floor — one GB200 NVL4 tray at
 # TP4, which 4x B200 (768 GB) matches here. The Engram tables alone are 196.6B parameters (~183 GiB)
-# and dominate everything but the experts. Weights and batch size set the capacity limit, not KV.
+# and dominate everything but the experts, so weights and batch size set the capacity limit before
+# KV does.
 #
 # B200 FOR NOW, and the closest DeepSeek profile to an RTX PRO 6000 lane: 8x RTX PRO 6000 is 760 GB
 # against the 614 GB floor at 13.20 EUR/h versus 18.00, so the lane would be TP=8 on
 # GPU-128xCPU-640GB-8xRTXPRO6000. 4x RTX PRO 6000 (380 GB) does not fit.
 #
-# WHAT BLOCKS IT. Not the MXFP4 experts: that grouped block-scaled GEMM fault is reported fixed on
-# cu130, and much of the "4-bit MoE returns garbage" history was vllm-project/vllm#54189 (an
-# uninitialised activation scale zeroing every expert). The live blocker is sparse attention —
-# vllm-project/vllm#55757 reports DeepSeek-style sparse MLA unservable on sm_120, passing a
-# short-prompt smoke test and failing at realistic lengths.
+# WHAT BLOCKS IT: sparse attention. vllm-project/vllm#55757 reports DeepSeek-style sparse MLA
+# unservable on sm_120 — it passes a short-prompt smoke test and fails at realistic lengths. The
+# MXFP4 experts are clear: cu130 fixes the grouped block-scaled GEMM fault, and much of the "4-bit
+# MoE returns garbage" history traces to vllm-project/vllm#54189, an uninitialised activation scale
+# zeroing every expert.
 #
 # WHEN TO OPEN THE LANE. vllm-project/vllm#54929 covers this model's geometry (512 NoPE + 64 RoPE =
 # 576 head layout) and, unlike #41834, is a small mergeable PR (12 files, mergeable 2026-09-19).

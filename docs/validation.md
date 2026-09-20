@@ -15,10 +15,10 @@ Status legend: ✅ validated live · ⬜ not yet run on this tier (paper-sized) 
 
 Numbers are vLLM's own startup report (`kv_cache_utils`), `nvidia-smi`, and `/v1/models`, captured live.
 
-**`Tier (plan)` below is where a run was measured, not always where a profile deploys.** `bin/spin`
-picks the plan from the profile's `min_plan`, and for several models the cheapest plan that runs
-them is not the one with a dated row here; where they differ, the row says so. The main lane per
-profile is in the [README table](../README.md#models).
+**`Tier (plan)` below is where a run was measured.** Where a profile deploys can differ: `bin/spin`
+picks that from the profile's `min_plan`, and for several models the cheapest plan that runs them is
+one nobody has measured yet. Rows say so where the two differ, and the main lane per profile is in
+the [README table](../README.md#models).
 
 | Profile | Model | Quant | Tier (plan) | `max_model_len` | Status | KV pool | Concurrency @ max | VRAM | Date | Evidence |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -38,7 +38,7 @@ profile is in the [README table](../README.md#models).
 | `deepseek-v4-pro-0813` | DeepSeek-V4-Pro-0813 (1.6T-A49B MoE) | FP4+FP8 | **8×B200** (`…8xB200`, TP=8) | 393216 | ⬜ | — | — | — | — | Newly added, `requires_review`. ~893 GB of weights; the recipe states it does not fit one 768 GB tray and all its recommended deployments are 8-GPU. ~€36/h and a ~1000 GB weights disk. `max_model_len` 393216 is the floor for the "max" reasoning mode 🚫 |
 | `k2-horizon-375b` | K2-Horizon-375B-A23B (379B-A27B MoE) | FP8 | **lane: 8×RTX PRO 6000** (`…8xRTXPRO6000`, TP=8) | 131072 (native 524288) | ⬜ | — | — | — | — | Newly added, `requires_review`. ~391 GB of weights. `K2HorizonForCausalLM` is in neither v0.23.0 nor v0.29.0, so it pins the same dated nightly as `deepseek-v41-flash`. The recipe's only verified run is BF16 at TP8 on MI355X; this serves the FP8 build at TP8 on 8× RTX PRO 6000 (13.20 €/h vs 18.00 for 4×B200), which is both cheaper and the same TP as the published run. 4× RTX PRO 6000 cannot hold it: 391 GB of weights against 380 GB 🚫 |
 | `glm53-flash` | GLM-5.3-Flash (321B-A18B MoE, multimodal) | FP8 | **4×B200** (`…4xB200`, TP=4) | 1048576 | ⬜ | — | — | — | — | Newly added, `requires_review`. ~306 GiB of weights. `Glm5NextForConditionalGeneration` is in neither v0.23.0 nor v0.29.0 — needs the pinned `vllm/vllm-openai:glm53-flash` image. FP8 KV cache is Blackwell-only for this model; Hopper must run BF16 KV 🚫 |
-| `glm53-flash-nvfp4` | GLM-5.3-Flash (321B-A18B MoE, multimodal) | NVFP4 | **4×RTX PRO 6000** (`…4xRTXPRO6000`, TP=4) | **98304 (capped — native is 1,048,576)** | ✅ | 4,552,849 tok | 4.34× @1M, ~46× at the cap | 85,219/97,887 MiB ×4 | 2026-09-20 | driver 595.58.03, cc 12.0, Server Edition. `Using FLASHINFER_MLA_SPARSE_SM120 attention backend out of potential backends: ['FLASHINFER_MLA_SPARSE_SM120']` — the pinned overlay is the only MLA candidate, so without it the model cannot start. NVFP4 MoE auto-selects **MARLIN**. Engine init 185 s. Graded soak (`bin/spin soak`): **60/60 needles at 3 × 20 × 25,861 tok** (p50 27.4 s), **10/10 at 98,100** (p50 57 s), **10/10 at 65,403** (p50 50 s), **20/20 at 51,670** (p50 27 s). **Context ceiling ~100k per request:** a single 102,400-token request kills the engine (CUDA illegal memory access in KDA linear attention), so `max_model_len` is capped at 98304 and over-long requests get a clean 400. Not concurrency, prefix caching, KV or memory exhaustion, not the overlay, and not this GPU — vllm#54317 reports the same frame on 4×B200. Full evidence in `ansible/models/glm53-flash-nvfp4.yml`. 6.60 €/h against 18.00 for the FP8 4×B200 row. |
+| `glm53-flash-nvfp4` | GLM-5.3-Flash (321B-A18B MoE, multimodal) | NVFP4 | **4×RTX PRO 6000** (`…4xRTXPRO6000`, TP=4) | **98304 (capped — native is 1,048,576)** | ✅ | 4,552,849 tok | 4.34× @1M, ~46× at the cap | 85,219/97,887 MiB ×4 | 2026-09-20 | driver 595.58.03, cc 12.0, Server Edition. `Using FLASHINFER_MLA_SPARSE_SM120 attention backend out of potential backends: ['FLASHINFER_MLA_SPARSE_SM120']` — the pinned overlay is the only MLA candidate, so without it the model cannot start. NVFP4 MoE auto-selects **MARLIN**. Engine init 185 s. Graded soak (`bin/spin soak`): **60/60 needles at 3 × 20 × 25,861 tok** (p50 27.4 s), **10/10 at 98,100** (p50 57 s), **10/10 at 65,403** (p50 50 s), **20/20 at 51,670** (p50 27 s). **Context ceiling ~100k per request:** a single 102,400-token request kills the engine (CUDA illegal memory access in KDA linear attention), so `max_model_len` is capped at 98304 and over-long requests get a clean 400. Request length alone decides it: concurrency, prefix caching, KV capacity, memory exhaustion, the overlay and this GPU were each ruled out, and vllm#54317 reports the same frame on 4×B200. Full evidence in `ansible/models/glm53-flash-nvfp4.yml`. 6.60 €/h against 18.00 for the FP8 4×B200 row. |
 | `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | **8×B200** (`…8xB200`, TP=8) | 1048576 | ⬜ | — | — | — | — | Newly added, `requires_review`. Same architecture and flags as `glm52`, but the recipe's floor is vLLM 0.28.0, so it pins v0.29.0 rather than the shared v0.23.0. ~756 GB of weights, ~€36/h 🚫 |
 | `kimi-k3` | Kimi K3 (93L, 896 experts, multimodal) | compressed-tensors | 8×GB300 — **not available on UpCloud** | 262144 | ⬜ | — | — | — | — | Newly added, `requires_review`. ~1561 GB of weights against ~1538 GB on 8×B200, and the recipe's floor is 8×GB300 (2304 GB). Its image is cu130-only and needs an r580+ driver. Every preflight refuses it here 🚫 |
 | `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | **4×B200** (`…4xB200`, TP=4+EP) | 786432 | ✅ | 828,160 tok | 1.05× | 170,786/183,359 MiB ×4 | 2026-07-04 | `bin/spin validate` OK; full soak + quality pass — see **“Soak & output-quality checks”** below. ⚠️ 1.05× = single-user at full ctx. 1M ctx does NOT fit (needs 53.9 GiB KV vs 40.8 free; vLLM ceiling 793,216) |
@@ -53,7 +53,7 @@ Notes:
 - **RTX PRO 6000 (96 GB GDDR7, compute capability 12.0) has its first row: `glm53-flash-nvfp4`,
   2026-09-20.** A 96 GB card reports **95 GB** via nvidia-smi, hence `min_vram_gb: 90` on these
   profiles. The card is the *Blackwell Server Edition* — the variant the overlay kernel lists as
-  verified, not the Max-Q or Workstation parts some upstream reports use. It is also the default
+  verified; upstream reports from Max-Q or Workstation parts do not carry over. It is also the default
   lane for `qwen38-flash-next` (4×) and `k2-horizon-375b` (8×), which have no rows yet: they pass
   preflight, print an untested warning and serve. Measure them and add the rows.
 - **Driver on the UpCloud GPU template: r595 (595.58.03), measured 2026-09-20** on
@@ -63,11 +63,11 @@ Notes:
   `qwen38-flash-next-x86_64-cu130` and `deepseekv4-flash-vision-x86_64-cu130` all exist in
   `vllm/vllm-openai`. It also makes the NVFP4 MoE profiles (`gemma4-26b-nvfp4`,
   `qwen36-35b-nvfp4`) worth re-testing on a single card at 1.65 EUR/h against 4.50 on a B200: the
-  GEMM fault they cite is reported fixed in cu130's FlashInfer, leaving dense-or-MoE as the only
-  open question, not the driver.
-- **Why the other large profiles still refuse cc 12.0: sparse attention, not quantisation.**
+  GEMM fault they cite is reported fixed in cu130's FlashInfer, so dense-or-MoE is the only
+  question left to answer.
+- **Why the other large profiles still refuse cc 12.0: sparse attention.**
   vllm-project/vllm#55757 reports DeepSeek-style sparse MLA unservable on sm_120, and it fails
-  *late* — short prompts pass, realistic lengths break, so a quick check is not evidence. The NVFP4
+  *late* — short prompts pass and realistic lengths break, so a quick check proves little. The NVFP4
   MoE GEMM fault is reported fixed on cu130 (flashinfer-ai/flashinfer#2708), and much of that
   symptom was vllm-project/vllm#54189: an uninitialised `w13_input_scale` silently multiplying every
   expert output by zero. **If a model loads and serves but emits one token repeatedly, suspect that

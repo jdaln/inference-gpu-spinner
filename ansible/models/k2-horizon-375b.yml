@@ -23,11 +23,11 @@
 # NO NVLINK on the RTX PRO 6000 plans: TP=8 over PCIe across eight cards is the heaviest
 # communication pattern in this repo, and unmeasured. If engine init hangs inside NCCL rather than
 # failing, add NCCL_P2P_DISABLE: 1 to extra_env — it costs throughput, so not pre-emptively.
-# Attention here is standard partial-RoPE, not sparse MLA, so the SM120 gap that blocks the GLM and
-# DeepSeek profiles (vllm-project/vllm#55757) does not apply.
+# Attention here is standard partial-RoPE, so the SM120 sparse-MLA gap that blocks the GLM and
+# DeepSeek profiles (vllm-project/vllm#55757) leaves this one alone.
 #
-# max_model_len 131072 is what the verified MI355X run used, not the native 524,288. With ~48.8 GB
-# of weights per rank against 95 GB there is headroom to raise it once a live run shows the KV pool.
+# max_model_len 131072 is what the verified MI355X run used; native is 524,288. With ~48.8 GB of
+# weights per rank against 95 GB there is headroom to raise it once a live run shows the KV pool.
 #
 # --trust-remote-code and --enable-expert-parallel come from the recipe's launch command. Reasoning
 # effort is per request via chat_template_kwargs {"reasoning_effort": "high|medium|low"} (high is

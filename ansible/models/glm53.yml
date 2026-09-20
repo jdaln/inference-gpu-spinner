@@ -5,8 +5,8 @@
 # under zai-org/GLM-5.3-BF16. ~756 GB of weights.
 #
 # PINNED IMAGE. GlmMoeDsaForCausalLM is already in the shared v0.23.0 pin, but the recipe's floor
-# for this model is vLLM 0.28.0 — presence in the model registry does not imply support. This uses
-# v0.29.0, the newest release.
+# for this model is vLLM 0.28.0: a registry hit means the code exists, the recipe says which version
+# serves it. This uses v0.29.0, the newest release.
 #
 # 8x B200. The recipe's single-node options are 8x H200 or 8x H20 (141 GB each) for FP8, and 8x B200
 # (180 GB each) to reach 1M context with an FP8 KV cache. UpCloud has neither H200 nor H20, so

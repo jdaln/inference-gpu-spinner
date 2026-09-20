@@ -26,9 +26,9 @@
 # NOT ON RTX PRO 6000 — use glm53-flash-nvfp4.yml, which serves the same model on 4x RTX PRO 6000 at
 # 6.60 EUR/h by carrying an out-of-tree kernel. This profile stays the plain, overlay-free FP8 path.
 # The MLA layers are rope-free (qk_rope_head_dim: 0) and no stock vLLM build has an SM120 kernel for
-# that shape (three failure modes in vllm-project/vllm#53963). It does not fail cleanly either:
-# vllm-project/vllm#55757 reports DSA models passing a short-prompt smoke test on sm_120 and dying
-# at realistic lengths, so unsupported_compute_capabilities refuses it up front.
+# that shape (three failure modes in vllm-project/vllm#53963). The failure also hides:
+# vllm-project/vllm#55757 reports DSA models answering short prompts correctly on sm_120 and dying
+# at realistic lengths, so unsupported_compute_capabilities refuses the GPU up front.
 model_repo: "zai-org/GLM-5.3-Flash"
 served_name: "glm53-flash"
 vllm_image_override: "vllm/vllm-openai:glm53-flash"

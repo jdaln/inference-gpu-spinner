@@ -88,7 +88,7 @@ Required:
 | `ACME_EMAIL` | Let's Encrypt contact address. Must be a real, deliverable address. |
 | `VLLM_API_KEY` | The bearer token your clients send. Generate one: `openssl rand -hex 32`. |
 
-`ACME_EMAIL` is checked before deployment, not after. Let's Encrypt refuses placeholder domains,
+`ACME_EMAIL` is checked before anything is provisioned. Let's Encrypt refuses placeholder domains,
 and Caddy would then never obtain a certificate while everything else reported success, so the
 deploy fails fast on an address ending in `example.com`, `example.org`, `example.net`, `.invalid`,
 `.local` or `.test`. Use an address you actually receive mail at.

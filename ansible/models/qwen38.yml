@@ -15,7 +15,7 @@
 # allocates outside the --gpu-memory-utilization budget, so a tight fit dies in capture however that
 # fraction is set. Drop it on a 96 GB RTX PRO 6000 or a B200.
 #
-# max_model_len 131072 is a starting point, not the model's limit. FP8 weights are ~31 GB against an
+# max_model_len 131072 is a starting point; the checkpoint goes to 262,144. FP8 weights are ~31 GB against an
 # L40S's ~46 GiB usable — between qwen36 (27 GB, serves 262144 here) and gemma4-31b (33 GB, capped
 # to 65536). Raise it toward the native 262144 on a larger card, or once a live L40S run shows the
 # KV pool has room.

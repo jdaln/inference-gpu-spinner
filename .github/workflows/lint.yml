@@ -40,10 +40,12 @@ jobs:
           ansible-playbook ansible/site.yml --syntax-check -e vllm_model=qwen36 -e sslip_host=example -e multi_model_enabled=true
       - name: the inventory directory actually parses
         # `.ini` is in Ansible's default ignore list, so a directory inventory of .ini files
-        # resolves to nothing and every play then matches no hosts while exiting 0.
+        # resolves to nothing and every play then matches no hosts while exiting 0. Only
+        # placeholder.ini is committed, and an empty group is reported under all.children rather
+        # than as a top-level key — check there, so this passes with or without a live hosts.ini.
         run: |
           ansible-inventory -i ansible/inventory --list > /tmp/inv.json
-          jq -e 'has("gpu")' /tmp/inv.json > /dev/null
+          jq -e '(.all.children // []) | index("gpu")' /tmp/inv.json > /dev/null
       - name: bin/spin default profile exists + every profile renders
         run: |
           default=$(sed -n 's/.*VLLM_MODEL:-\([a-z0-9-]*\).*/\1/p' bin/spin bin/lib/*.sh | head -1)

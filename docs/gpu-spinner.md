@@ -187,22 +187,22 @@ plus egress). Keep-warm pays off above roughly one spin per few days; otherwise 
   rather than failing, `NCCL_P2P_DISABLE=1` in a profile's `extra_env` is the fallback; it costs
   throughput where P2P works, so not pre-emptively.
 
-**What blocks the rest: sparse attention, not quantisation.**
+**Sparse attention is what blocks the rest.**
 
-- **No SM120 path for DSA models.** Every remaining large profile is a DeepSeek-style sparse MLA
+- **DSA models have no SM120 kernel.** Every remaining large profile is a DeepSeek-style sparse MLA
   model, and [vllm#55757](https://github.com/vllm-project/vllm/issues/55757) reports GLM-5.3,
-  GLM-5.2 and DeepSeek-V4 unservable there, reproduced on 8× RTX PRO 6000. It does **not** fail
-  cleanly: a short-prompt smoke test passes, realistic lengths break. GLM-5.3-Flash is worse still —
+  GLM-5.2 and DeepSeek-V4 unservable there, reproduced on 8× RTX PRO 6000. The failure **hides**:
+  short prompts answer correctly and realistic lengths break. GLM-5.3-Flash is worse still —
   rope-free (`qk_rope_head_dim: 0`), with no SM120 kernel at all
   ([vllm#53963](https://github.com/vllm-project/vllm/issues/53963)). The fixes
   ([vllm#55277](https://github.com/vllm-project/vllm/pull/55277),
   [vllm#54929](https://github.com/vllm-project/vllm/pull/54929),
   [vllm#41834](https://github.com/vllm-project/vllm/pull/41834)) were all open at 2026-09-19.
 - **The NVFP4 MoE GEMM fault is reported fixed** on cu130 builds — the FlashInfer CUTLASS
-  grouped-GEMM fix from `flashinfer-ai/flashinfer#2708` is in vLLM's FlashInfer pin. Treat
-  "NVFP4 MoE returns invalid output on cc 12.0" as a property of the **cu129 images this repo
-  pins**, not of the hardware.
-- **Much of that symptom was never the GEMM.**
+  grouped-GEMM fix from `flashinfer-ai/flashinfer#2708` is in vLLM's FlashInfer pin. Read
+  "NVFP4 MoE returns invalid output on cc 12.0" as a statement about the **cu129 images this repo
+  pins** — that is where the fault lives, and a cu130 tag leaves it behind.
+- **A second fault produced much of the same symptom.**
   [vllm#54189](https://github.com/vllm-project/vllm/issues/54189): `ModelOptNvFp4FusedMoE` leaves
   `w13_input_scale` uninitialised and expects the checkpoint to fill it. A weight-only NVFP4
   checkpoint never does, it reads 0.0, and every expert output is multiplied by zero — silently. The

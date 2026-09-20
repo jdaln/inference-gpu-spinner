@@ -23,13 +23,13 @@
 #                             prefetched asynchronously, leaving ~47 GB per rank for KV. Optional
 #                             from 141 GB (H200) up.
 #   --moe-backend triton    — the recipe's Hopper MoE backend. It works on every generation, and
-#                             dropping it on RTX Blackwell is a measurement nobody has taken: try
-#                             that after a first clean run, not during one.
+#                             dropping it on RTX Blackwell is a measurement nobody has taken. Try
+#                             that once a clean run exists to compare against.
 #
 # NO NVLINK on the RTX PRO 6000 plans: TP=4 runs over PCIe. If engine init hangs inside NCCL rather
-# than failing, add NCCL_P2P_DISABLE: 1 to extra_env. Qwen Sparse Attention is not affected by the
-# SM120 sparse-MLA gap that blocks the GLM and DeepSeek profiles — vllm-project/vllm#55430 is a
-# prefill tuning PR enabled on SM121 only.
+# than failing, add NCCL_P2P_DISABLE: 1 to extra_env. Qwen Sparse Attention sidesteps the SM120
+# sparse-MLA gap that blocks the GLM and DeepSeek profiles — vllm-project/vllm#55430 is a prefill
+# tuning PR enabled on SM121 only.
 #
 # OTHER TOPOLOGIES. TP2 is the minimum validated FP8 deployment (on GB300), TP4 the recommended full
 # tray. On eight GPUs use TEP8 (TP8 plus --enable-expert-parallel); plain TP8 is incompatible with
@@ -40,10 +40,11 @@
 # higher per-token latency, ~36% acceptance). Verify before enabling on other hardware:
 #   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":3}']
 #
-# --max-num-seqs 256 is not a tuning knob: lowering it triggers a Mamba-cache capacity error at
-# startup. --gpu-memory-utilization 0.85 is the verified H100 value (the recipe advises 0.90 for
-# large multimodal batches). --tool-call-parser is qwen3_coder here, not the qwen3_xml Qwen3.8-27B
-# uses. --reasoning-parser qwen3 is required: the chat template opens every turn with <think>.
+# Leave --max-num-seqs at 256: lowering it triggers a Mamba-cache capacity error at startup.
+# --gpu-memory-utilization 0.85 is the verified H100 value (the recipe advises 0.90 for large
+# multimodal batches). --tool-call-parser is qwen3_coder here, the qwen3_xml one belongs to
+# Qwen3.8-27B. --reasoning-parser qwen3 is required: the chat template opens every turn with
+# <think>.
 #
 # max_model_len 262144 is the native limit. Startup and bounded evaluation were validated there; a
 # single full-length 262K request was not tested upstream.

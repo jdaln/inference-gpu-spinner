@@ -77,8 +77,8 @@
 # (default 150), so `bin/spin down` will remove it by default and the next run re-pulls 195 GB —
 # use `bin/spin down --keep-disk` or DECOMMISSION_ON_DOWN=never between test runs.
 #
-# CONTEXT CEILING. max_model_len is capped at 98304, not the checkpoint's native 1,048,576.
-# Without the cap one over-long request kills the engine for every other user on the box.
+# CONTEXT CEILING. max_model_len is capped at 98304, well under the checkpoint's native 1,048,576,
+# because one over-long request kills the engine for every other user on the box.
 #
 # Measured 2026-09-20, by prompt tokens per request:
 #     1 x 102,400  -> crash          10 x 98,100 -> pass 10/10 (p50 57 s)
@@ -87,8 +87,8 @@
 #     2 x 250,000  -> crash          20 x 25,861 -> pass 60/60 needles over 3 rounds (p50 27.4 s,
 #    20 x ~103,000 -> crash                         p95 31.0 s, head/middle/tail depths)
 # The boundary is between 98,100 and 102,400 prompt tokens per request, independent of how many
-# requests are in flight. Record prompt_tokens, not `bin/spin soak --context`: the haystack sizer
-# aims by words, so the requested figure runs ~25% high.
+# requests are in flight. Record prompt_tokens rather than the `--context` you asked for: the
+# haystack sizer aims by words, so the requested figure runs ~25% high.
 #
 # Fault: CUDA illegal memory access in the KDA linear-attention path.
 #   vllm/models/glm5next/nvidia/ops/third_party/kda/kernels.py:1214 chunk_kda_with_fused_gate
@@ -169,6 +169,7 @@ min_compute_capability: 10.0   # Blackwell; the overlay kernel covers sm_120 and
 min_driver_major: 580          # the image is a cu130 build
 validated: true    # live run 2026-09-20 — see docs/validation.md
 # Kept on despite validation: 6.60 EUR/h is a deliberate spend and the profile needs a 4-GPU plan.
-# bin/spin derives that plan from min_plan, so the gate is about cost, not the wrong tier.
+# bin/spin derives that plan from min_plan, so the tier takes care of itself and this gate is
+# purely about the spend.
 requires_review: true
 health_wait_retries: 300   # x10s = 50 min — ~175 GB to pull, plugin build, then TP=4 init

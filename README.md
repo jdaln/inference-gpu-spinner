@@ -69,8 +69,8 @@ depends on whether the checkpoint is dense or MoE — see below the table.
 
 **Main lane** is the plan `bin/spin up --model <name>` deploys when you don't pass `--plan`; it
 comes from the profile's `min_plan`. **Measured on** is where a dated live run exists in
-[docs/validation.md](docs/validation.md). They differ wherever the cheapest plan that runs a model
-is not the one someone has measured.
+[docs/validation.md](docs/validation.md). The two differ whenever the cheapest plan that runs a
+model is still waiting for someone to measure it.
 
 | Profile | Model | Quant | Main lane (default plan) | Measured on |
 |---|---|---|---|---|
@@ -101,14 +101,14 @@ and B200 are sold out. Every FP8 profile runs on it, and so does **dense** NVFP4
 have **no NVLink**, so tensor parallelism runs over PCIe. Only `glm53-flash-nvfp4` has a measured
 run so far; the other cc 12.0 lanes print an untested warning and serve — record what you measure.
 
-**What keeps the rest on B200 is sparse attention, not quantisation.** Every remaining large model
-here is a DeepSeek-style sparse MLA architecture with no working SM120 path
-([vllm#55757](https://github.com/vllm-project/vllm/issues/55757)), and it fails *late*: a
-short-prompt smoke test passes, realistic lengths break. `glm53-flash-nvfp4` gets around it with a
-pinned third-party kernel overlay; the DeepSeek profiles keep their cc 12.0 gate until the upstream
-fixes land, each recording its own trigger. NVFP4 MoE is no longer part of this — that CUTLASS
-grouped-GEMM fault is reported fixed on cu130. Profiles declare their limits via
-`min_compute_capability`, `unsupported_compute_capabilities` and
+**Sparse attention is what keeps the rest on B200.** Every remaining large model here is a
+DeepSeek-style sparse MLA architecture, and SM120 has no working kernel for it
+([vllm#55757](https://github.com/vllm-project/vllm/issues/55757)). The failure hides: short prompts
+answer correctly and realistic lengths break. `glm53-flash-nvfp4` gets around it with a pinned
+third-party kernel overlay; the DeepSeek profiles keep their cc 12.0 gate until the upstream fixes
+land, each recording its own trigger. Quantisation is the settled part: cu130 fixes the CUTLASS
+grouped-GEMM fault behind the old reports of NVFP4 MoE misbehaving on this card. Profiles
+declare their limits via `min_compute_capability`, `unsupported_compute_capabilities` and
 `untested_compute_capabilities`. Detail:
 [docs/gpu-spinner.md](docs/gpu-spinner.md#what-runs-on-which-gpu).
 
@@ -172,8 +172,9 @@ python3 tests/check-vllm-compat.py            # all profiles
 python3 tests/check-vllm-compat.py qwen38     # just one
 ```
 
-Presence in the registry does not imply support: a recipe often states a higher version floor than
-the release that first carried the architecture. Read the recipe, then pin accordingly.
+A registry hit means the code exists, while the recipe says which version actually serves the
+model — often a higher floor than the release that first carried the architecture. Read the recipe,
+then pin accordingly.
 
 ## Other providers
 

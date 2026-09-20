@@ -12,12 +12,14 @@
 # 6.60 EUR/h against 18.00) and min_vram_gb 90 already clears a 95 GB card. The cc 12.0 gate below
 # is the only thing holding this on B200.
 #
-# WHAT THE GATE IS FOR: sparse attention, not FP4. vllm-project/vllm#55757 reports DeepSeek-V4
-# unservable on sm_120, and it only shows at realistic prompt lengths, not on a smoke test. The
-# FP4-MoE story no longer holds: that CUTLASS grouped block-scaled GEMM fault is reported fixed on
-# cu130 (flashinfer-ai/flashinfer#2708, in vLLM's FlashInfer pin), and much of the "NVFP4 MoE
-# returns garbage" reporting was vllm-project/vllm#54189 — an uninitialised w13_input_scale zeroing
-# every expert output on weight-only checkpoints.
+# WHY THE GATE IS THERE: sparse attention. vllm-project/vllm#55757 reports DeepSeek-V4 unservable
+# on sm_120, and the failure hides — short prompts answer correctly and realistic prompt lengths
+# break, so a smoke test signs off on a broken build.
+#
+# The FP4 experts are fine on a cu130 build: flashinfer-ai/flashinfer#2708 fixes the CUTLASS grouped
+# block-scaled GEMM and is in vLLM's FlashInfer pin. Much of the "NVFP4 MoE returns garbage"
+# reporting turned out to be vllm-project/vllm#54189 — an uninitialised w13_input_scale that zeroes
+# every expert output on a weight-only checkpoint.
 #
 # WHEN TO OPEN THE LANE. vllm-project/vllm#41834 adds SM12x support for DeepSeek V4 Flash, but as of
 # 2026-09-19 it is 288 commits over 221 files with conflicts, and its tagged preview
@@ -32,8 +34,9 @@
 # NVLink at ~18 EUR/h — too costly to validate speculatively. 2x B200 (TP=2, 384 GB, ~9 EUR/h) also
 # clears the 202 GB budget and is what the ROCm run used, but has no published NVIDIA run.
 #
-# max_model_len 32768 is the recipe's measured bound, not the advertised 1,048,576: 1M-token KV
-# needs far more memory than the weights do, so raise it only after checking the KV pool at startup.
+# max_model_len 32768 is the recipe's measured bound; the checkpoint advertises 1,048,576. A
+# 1M-token KV cache needs far more memory than the weights do, so raise this only after reading the
+# KV pool vLLM reports at startup.
 # --allowed-local-media-path is omitted — it is only needed for file:// image URLs, and clients here
 # send http(s):// or base64. The repo ships no Jinja template; vLLM resolves --tokenizer-mode
 # deepseek_v4 itself.
