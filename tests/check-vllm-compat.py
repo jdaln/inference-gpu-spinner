@@ -42,6 +42,8 @@ TAG_TO_REF = {
     "qwen38-flash-next": "main",
     "kimi-k3": "main",
     "glm53-flash": "main",
+    # Same per-model build as glm53-flash, published as the CUDA 13 variant.
+    "glm53-flash-x86_64-cu130": "main",
 }
 
 REGISTRY = "vllm/model_executor/models/registry.py"
@@ -118,7 +120,9 @@ def main(argv):
         profile = parse_profile(path)
         if wanted and profile["name"] not in wanted:
             continue
-        tag = (profile["vllm_image_override"] or global_image).split(":", 1)[1]
+        # A profile may pin "repo:tag@sha256:..." to hold a mutable tag still. The digest is what
+        # docker resolves; the tag is what identifies the vLLM build, so map on the tag alone.
+        tag = (profile["vllm_image_override"] or global_image).split(":", 1)[1].split("@", 1)[0]
         ref = TAG_TO_REF.get(tag)
         label = f"{profile['name']:<26} {tag}"
 

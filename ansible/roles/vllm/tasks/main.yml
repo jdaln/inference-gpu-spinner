@@ -141,6 +141,13 @@
       Let's Encrypt refuses placeholder domains like example.com/.local/.test, so Caddy would never
       obtain a TLS cert. Current ACME_EMAIL='{{ acme_email | default('') }}'.
 
+# Plugin overlays are built BEFORE the compose file is rendered, because the render needs the paths
+# they produce — and after the preflights above, so a profile that cannot run on this GPU fails
+# before anything is cloned or compiled.
+- name: Build any out-of-tree vLLM plugins this profile pins
+  ansible.builtin.include_tasks: plugins.yml
+  when: (vllm_plugins | default([])) | length > 0
+
 - name: Ensure the compose directory exists
   ansible.builtin.file:
     path: "{{ compose_dir }}"

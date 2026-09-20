@@ -64,13 +64,15 @@ time**. Clients pick a model with the OpenAI `model` field; an idle backend unlo
 
 ```bash
 bin/spin swap-profiles                                   # list presets
-bin/spin up --swap-profile l40s      --plan GPU-8xCPU-64GB-1xL40S       # qwen36 + gemma4-26b/31b
-bin/spin up --swap-profile b200-nvfp4 --plan GPU-12xCPU-240GB-1xB200    # the four NVFP4 models
+bin/spin up --swap-profile l40s                          # qwen36 + gemma4-26b/31b
+bin/spin up --swap-profile b200-nvfp4                    # the four NVFP4 models
 ```
 
-- **Presets** live in `ansible/swap-profiles/<name>.yml` — just a list of model-profile names
-  (`swap_profiles:`). Each model's repo, context, and vLLM args come from its `ansible/models/`
-  profile, so a model is defined once. Add a preset by dropping in a new file.
+- **Presets** live in `ansible/swap-profiles/<name>.yml` — a list of model-profile names
+  (`swap_profiles:`) plus the plan to deploy on (`swap_plan:`, which `--plan` overrides). Each
+  model's repo, context, and vLLM args come from its `ansible/models/` profile, so a model is
+  defined once. Add a preset by dropping in a new file; CI checks its `swap_plan` against
+  [`tests/plans.txt`](../tests/plans.txt).
 - **On-demand swap**: the first request for a model loads it (cold: add its weight-download time;
   warm: seconds). Requests to a different model swap the backend — one in VRAM at a time. Size the
   box for the **largest** model in the set, not the sum.
@@ -105,11 +107,18 @@ until you fully decommission (below). This is provider-agnostic; the numbers bel
 | RTX PRO 6000 96 GB | `GPU-16xCPU-80GB-1xRTXPRO6000` | 1.65 | 0.87 | every FP8 profile, dense NVFP4 — untested |
 | H100 80 GB | `GPU-12xCPU-240GB-1xH100` | 1.79 | 1.78 | FP8 MoE (qwen36-35b, validated) |
 | B200 192 GB | `GPU-12xCPU-240GB-1xB200` | 4.50 | 3.38 | all NVFP4, single-GPU |
-| 2×RTX PRO 6000 | `GPU-32xCPU-160GB-2xRTXPRO6000` | 3.30 | 1.74 | — |
-| 4×RTX PRO 6000 | `GPU-64xCPU-320GB-4xRTXPRO6000` | 6.60 | 3.48 | — |
-| 8×RTX PRO 6000 | `GPU-128xCPU-640GB-8xRTXPRO6000` | 13.20 | 6.96 | — |
-| 4×B200 | `GPU-48xCPU-960GB-4xB200` | 18.00 | 13.50 | GLM-5.2 NVFP4 (TP=4), DeepSeek vision |
-| 8×B200 | `GPU-96xCPU-1920GB-8xB200` | 36.00 | 27.00 | GLM-5.2 FP8 (TP=8) |
+| 2×RTX PRO 6000 | `GPU-32xCPU-160GB-2xRTXPRO6000` | 3.30 | 1.74 | — (no profile yet; glm53-flash-nvfp4 needs 0.97 util to fit) |
+| 4×RTX PRO 6000 | `GPU-64xCPU-320GB-4xRTXPRO6000` | 6.60 | 3.48 | **glm53-flash-nvfp4**, **qwen38-flash-next** |
+| 4×H100 | `GPU-48xCPU-960GB-4xH100` | ? | ? | qwen38-flash-next (the upstream-verified tier) |
+| 8×RTX PRO 6000 | `GPU-128xCPU-640GB-8xRTXPRO6000` | 13.20 | 6.96 | **k2-horizon-375b** (TP=8) |
+| 4×B200 | `GPU-48xCPU-960GB-4xB200` | 18.00 | 13.50 | GLM-5.2 NVFP4 (TP=4), glm53-flash FP8, DeepSeek vision |
+| 8×B200 | `GPU-96xCPU-1920GB-8xB200` | 36.00 | 27.00 | GLM-5.2 FP8 (TP=8), GLM-5.3, DeepSeek-V4-Pro |
+
+`bin/spin up` picks the plan from the profile's `min_plan` (or a preset's `swap_plan`) unless you
+pass `--plan`, so the bold rows above are what those models deploy onto by default. The full
+allowlist CI checks against is [`tests/plans.txt`](../tests/plans.txt) — keep the two in sync.
+The 4×H100 price is unrecorded here: UpCloud sells the plan (`qwen38-flash-next` cites it) but this
+repo has never captured its list rate.
 
 Plan identifiers come from UpCloud's [GPU Server configurations](https://upcloud.com/docs/products/gpu-servers/configurations/);
 the number before `xCPU` is **cores**, not threads. L4 (24 GB, €0.58/h) and B300 (€6.67/h) are also
@@ -119,18 +128,74 @@ offered — the L4 fits none of the current profiles, and no profile targets B30
 12.0. It is Blackwell, but a different family from the B200's 10.0, which changes what runs:
 
 - Every **FP8** profile runs on it, with far more headroom than the 48 GB L40S — including
-  `qwen36-35b`, whose validated tier remains the H100.
+  `qwen36-35b`, which was measured on the H100.
 - **Dense NVFP4** (`qwen36-27b-nvfp4`, `gemma4-31b-nvfp4`) runs on it: those use the NVFP4
-  scaled-mm path, which has SM120 kernels. Their validated tier remains the B200.
+  scaled-mm path, which has SM120 kernels. They were measured on the B200.
 - Nothing has been **measured** on it yet. Profiles that permit it list cc 12.0 in
   `untested_compute_capabilities`, so the deploy prints a warning and serves; the numbers in
   [validation.md](validation.md) are from other hardware until someone records a run.
-- **NVFP4 MoE** does not. Those weights go through a CUTLASS grouped block-scaled GEMM that returns
-  invalid output on compute capability 12.0 unless FlashInfer is patched and built against CUDA 13.0;
-  the pinned images are cu129, and [vllm-project/vllm#35566](https://github.com/vllm-project/vllm/issues/35566)
-  is still open. Those profiles declare `unsupported_compute_capabilities: [12.0]` and stay on B200.
-- Multi-GPU RTX PRO 6000 plans exist but no profile targets them: without NVLink, tensor parallelism
-  runs over PCIe, and the checkpoints large enough to need it are all NVFP4 MoE.
+- **Multi-GPU plans now have profiles.** `qwen38-flash-next` and `glm53-flash-nvfp4` default to 4×,
+  and `k2-horizon-375b` to 8× at TP=8. There is still **no NVLink**, so tensor parallelism runs over
+  PCIe — unmeasured here, and the reason to record throughput on the first runs. If engine init
+  hangs inside NCCL rather than failing, `NCCL_P2P_DISABLE=1` via a profile's `extra_env` is the
+  fallback; it costs throughput where P2P does work, so do not set it pre-emptively.
+
+**What actually blocks the rest, and what no longer does.** The story here changed in 2026 and the
+old version is worth unlearning:
+
+- **Sparse attention is the live blocker.** Every remaining large profile is a DeepSeek-style sparse
+  MLA (DSA) model, and that has no working SM120 path.
+  [vllm#55757](https://github.com/vllm-project/vllm/issues/55757) reports GLM-5.3, GLM-5.2 and
+  DeepSeek-V4 unservable there, reproduced on 8× RTX PRO 6000 — and it does **not** fail cleanly: a
+  short-prompt smoke test passes and only realistic prompt lengths fail. GLM-5.3-Flash is worse
+  still, being rope-free (`qk_rope_head_dim: 0`), which has no SM120 kernel at all
+  ([vllm#53963](https://github.com/vllm-project/vllm/issues/53963)). The fixes
+  ([vllm#55277](https://github.com/vllm-project/vllm/pull/55277),
+  [vllm#54929](https://github.com/vllm-project/vllm/pull/54929),
+  [vllm#41834](https://github.com/vllm-project/vllm/pull/41834)) were all open at 2026-09-19.
+- **The NVFP4 MoE GEMM fault is reported fixed** on cu130 builds — the FlashInfer CUTLASS
+  grouped-GEMM fix from `flashinfer-ai/flashinfer#2708` is in vLLM's FlashInfer pin. Treat
+  "NVFP4 MoE returns invalid output on cc 12.0" as a property of the **cu129 images this repo
+  pins**, not of the hardware.
+- **Much of that symptom was never the GEMM.**
+  [vllm#54189](https://github.com/vllm-project/vllm/issues/54189): `ModelOptNvFp4FusedMoE` leaves
+  `w13_input_scale` uninitialised and expects the checkpoint to fill it. A weight-only NVFP4
+  checkpoint never does, it reads 0.0, and every expert output is multiplied by zero — silently. The
+  tell is a model that loads and serves but emits one token repeatedly.
+
+### cu130 images, and the driver that gates them
+
+`vllm/vllm-openai` publishes cu130 tags for these models in the same official repository the repo
+already pins from — `glm53-flash-x86_64-cu130`, `qwen38-flash-next-x86_64-cu130`,
+`deepseekv4-flash-vision-x86_64-cu130` among others. Moving a profile to cu130 is a tag change, not
+a new image line.
+
+The one gate is the **host driver**: cu130 needs r580+, and the UpCloud GPU template decides it.
+Nobody has recorded what it ships — `gpu_min_driver_blackwell` is 570 and only `kimi-k3` declares
+`min_driver_major: 580`. The gpu role already prints the driver on every deploy
+(`… driver <major>` in "Report the detected GPU topology"), so read that line on the next run and
+record it in [validation.md](validation.md); it settles the question for every other profile. If it
+is r580+, `gemma4-26b-nvfp4` and `qwen36-35b-nvfp4` become worth re-testing on a single RTX PRO 6000
+at €1.65/h against €4.50 on a B200.
+
+### Plugin overlays
+
+When a GPU needs a kernel no released image carries, a profile can pin an out-of-tree package in
+`vllm_plugins` (see `ansible/roles/vllm/tasks/plugins.yml`). Each entry is cloned at a **pinned
+commit**, built inside that profile's own image — the `.so` is libtorch- and Python-ABI-tagged, so
+it has to be — and left under `/data/ext/<name>-<commit>` on the persistent disk, so the build
+happens once per commit and survives teardown. The compose file mounts it read-only and puts it on
+`PYTHONPATH`.
+
+Plugins register through vLLM's `vllm.general_plugins` entry point, so **no vLLM file is patched**,
+and a well-behaved one is inert unless the profile also sets its environment variable. That is the
+property the safety argument rests on: verify it in the source before adding an entry.
+
+`glm53-flash-nvfp4` is the only profile using this today. It carries
+[Libertai/vllm-sparse-mla-blackwell](https://github.com/Libertai/vllm-sparse-mla-blackwell)
+(Apache-2.0) for rope-free sparse MLA on sm_120/121 plus the `vllm#54189` activation-scale fix.
+It is third-party code from a small project: read it at the pinned commit rather than trusting it.
+Retire the overlay once `vllm#55277` and `flashinfer#5075` land in a release image.
 
 Measured cold/warm timings and per-session costs
 are in [validation.md](validation.md) (“Timings & session cost”) — read those before an expensive tier.

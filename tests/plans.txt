@@ -1,0 +1,19 @@
+# UpCloud GPU plan identifiers this repo may deploy, with list price in EUR/hour (fi-hel2, 2026-07).
+#
+# This is the allowlist CI checks every profile's `min_plan` and every swap preset's `swap_plan`
+# against. bin/spin now reads those fields to decide which plan to deploy, so a typo would reach
+# `tofu apply` instead of merely printing a wrong message.
+#
+# Keep in sync with the plan table in docs/gpu-spinner.md. Format: <plan-id> <eur-per-hour>.
+# A price of "?" means UpCloud publishes the plan but this repo has not recorded a list price.
+#
+GPU-8xCPU-64GB-1xL40S            1.11
+GPU-16xCPU-80GB-1xRTXPRO6000     1.65
+GPU-12xCPU-240GB-1xH100          1.79
+GPU-32xCPU-160GB-2xRTXPRO6000    3.30
+GPU-12xCPU-240GB-1xB200          4.50
+GPU-64xCPU-320GB-4xRTXPRO6000    6.60
+GPU-48xCPU-960GB-4xH100          ?
+GPU-128xCPU-640GB-8xRTXPRO6000  13.20
+GPU-48xCPU-960GB-4xB200         18.00
+GPU-96xCPU-1920GB-8xB200        36.00

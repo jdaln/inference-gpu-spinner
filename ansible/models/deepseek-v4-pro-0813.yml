@@ -78,9 +78,9 @@ min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~893 GB of weights acr
 min_compute_capability: 10.0
 unsupported_compute_capabilities: [12.0]
 unsupported_reason: >-
-  its FP4 MoE experts need the CUTLASS grouped block-scaled GEMM, which returns invalid output on
-  RTX Blackwell (cc 12.0) without a FlashInfer build patched against CUDA 13.0, and an 8x RTX PRO
-  6000 node is both too small for this checkpoint and has no NVLink for TP=8
+  size decides this one regardless of kernels: ~893 GB of weights against 768 GB on an 8x RTX PRO
+  6000 node, which is also PCIe-only with no NVLink for TP=8. DeepSeek-style sparse MLA has no
+  working cc 12.0 attention path either (vllm-project/vllm#55757)
 validated: false     # newly added — no live run on this account yet
 requires_review: true
 health_wait_retries: 900   # x10s = 150 min — ~893 GB to pull, then TP=8 init across eight GPUs

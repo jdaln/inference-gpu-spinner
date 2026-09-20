@@ -11,7 +11,10 @@
 #      plan is 8x B200, about 1538 GB usable, and the weights alone are ~1561 GB before KV cache or
 #      activations. min_vram_gb: 280 encodes the per-GPU class this needs, so a B200 (179 GB) is
 #      refused. UpCloud does list B300 (288 GB) on its pricing page, but publishes no plan
-#      identifier for it, so min_plan below names the tier rather than a code you can pass.
+#      identifier for it. The tier this needs is 8x NVIDIA GB300/B300 (288 GB per GPU); there is
+#      deliberately NO min_plan key below, because that field now has to be a real plan identifier
+#      — bin/spin reads it to choose the plan to deploy. With it absent, bin/spin falls back to the
+#      OpenTofu default and the preflights refuse the run, which is the correct outcome here.
 #   2. DRIVER. The kimi-k3 image ships as a CUDA 13 (cu130) build only — there is no cu129 tag, and
 #      the K3 wheels are not on the cu129 nightly index. It needs an r580+ host driver, which the
 #      UpCloud GPU template decides. min_driver_major: 580 checks this before the container starts.
@@ -45,7 +48,6 @@ extra_vllm_args:
   - "--tool-call-parser"
   - "kimi_k3"
   - "--enable-auto-tool-choice"
-min_plan: "8x NVIDIA GB300/B300 (288 GB per GPU) — no UpCloud plan identifier published"
 min_vram_gb: 280               # per-GPU floor: GB300/B300 class. A B200 (179 GB) is refused.
 min_compute_capability: 10.0
 min_driver_major: 580          # the kimi-k3 image is a cu130 build and needs an r580+ host driver

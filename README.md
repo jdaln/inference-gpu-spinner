@@ -42,8 +42,9 @@ Each variable, and what to set when your egress IP rotates, is covered in
 ```bash
 bin/spin persistent-init                                 # once: create the disk + floating IP
 bin/spin up                                              # default: qwen36 (Qwen3.6-27B FP8) on an L40S
-bin/spin up --model qwen36-35b --plan GPU-16xCPU-80GB-1xRTXPRO6000  # 96 GB card, all FP8 profiles
-bin/spin up --swap-profile b200-nvfp4 --plan GPU-12xCPU-240GB-1xB200   # several models, one endpoint
+bin/spin up --model qwen38-flash-next                    # each profile brings its own plan (4x RTX PRO 6000 here)
+bin/spin up --model qwen36-35b --plan GPU-16xCPU-80GB-1xRTXPRO6000  # --plan overrides it
+bin/spin up --swap-profile b200-nvfp4                    # several models, one endpoint
 bin/spin status         # GPU + service status
 bin/spin validate       # capture context/KV/VRAM/test-gen evidence
 bin/spin soak           # answer-quality + concurrent-load check
@@ -66,35 +67,52 @@ Pick a profile with `--model` (or `-e vllm_model=`); profiles live in `ansible/m
 anywhere from an L40S up; **NVFP4** needs Blackwell (~2× smaller + faster), and *which* Blackwell
 depends on whether the checkpoint is dense or MoE — see below the table.
 
-| Profile | Model | Quant | Validated tier | Also runs on (untested) |
+**Main lane** is the plan `bin/spin up --model <name>` deploys when you don't pass `--plan`; it
+comes from the profile's `min_plan`. **Measured on** is where a dated live run exists in
+[docs/validation.md](docs/validation.md). They differ wherever the cheapest plan that runs a model
+is not the one someone has measured.
+
+| Profile | Model | Quant | Main lane (default plan) | Measured on |
 |---|---|---|---|---|
-| `qwen36` (default) | Qwen3.6-27B | FP8 | L40S | RTX PRO 6000, H100 |
-| `qwen38` | Qwen3.8-27B | FP8 | — (new) | L40S, RTX PRO 6000, H100 |
-| `qwen38-nvfp4` | Qwen3.8-27B | NVFP4 | — (new) | RTX PRO 6000, B200 |
-| `qwen38-flash-next` | Qwen3.8-Flash-Next (125B-A6B MoE + 51B N-gram) | FP8 | — (new) | 4×H100, 4×B200 |
-| `gemma4-26b` | Gemma 4 26B-A4B (MoE) | FP8 | L40S | RTX PRO 6000, H100 |
-| `gemma4-31b` | Gemma 4 31B | FP8 | L40S | RTX PRO 6000, H100 |
-| `qwen36-35b` | Qwen3.6-35B-A3B (MoE) | FP8 | **H100** | RTX PRO 6000 |
-| `qwen36-27b-nvfp4`, `gemma4-31b-nvfp4` | (same models, dense) | NVFP4 | B200 | RTX PRO 6000 |
-| `qwen36-35b-nvfp4`, `gemma4-26b-nvfp4` | (same models, MoE) | NVFP4 | B200 | — |
-| `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | 4×B200 | — |
-| `glm53-flash` | GLM-5.3-Flash (321B-A18B MoE, **multimodal**) | FP8 | — (new) | 4×B200 — `requires_review` |
-| `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | — (new) | 8×B200 — `requires_review` |
-| `k2-horizon-375b` | K2-Horizon-375B-A23B (379B-A27B MoE) | FP8 | — (new) | 4×B200 — `requires_review` |
-| `kimi-k3` | Kimi K3 (93L, 896 experts, **multimodal**) | compressed-tensors | — (new) | **no UpCloud plan fits** |
-| `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | — (new) | 4×B200 — `requires_review` |
-| `deepseek-v41-flash` | DeepSeek-V4.1-Flash (552B + 196B Engram MoE, **multimodal**) | MXFP4+MXFP8 | — (new) | 4×B200 — `requires_review` |
-| `deepseek-v4-pro-0813` | DeepSeek-V4-Pro-0813 (1.6T-A49B MoE) | FP4+FP8 | — (new) | 8×B200 — `requires_review` |
-| `glm52` | GLM-5.2 | FP8 | — | 8×B200 — `requires_review` (kept gated: ~36 €/h to test) |
+| `qwen36` (default) | Qwen3.6-27B | FP8 | L40S | L40S |
+| `qwen38` | Qwen3.8-27B | FP8 | L40S | — (new) |
+| `qwen38-nvfp4` | Qwen3.8-27B | NVFP4 | RTX PRO 6000 | — (new) |
+| `qwen38-flash-next` | Qwen3.8-Flash-Next (125B-A6B MoE + 51B N-gram) | FP8 | **4×RTX PRO 6000** | — (new; upstream verified 4×H100) |
+| `glm53-flash-nvfp4` | GLM-5.3-Flash (321B-A18B MoE, **multimodal**) | NVFP4 | **4×RTX PRO 6000** | — (new; needs a plugin overlay) |
+| `gemma4-26b` | Gemma 4 26B-A4B (MoE) | FP8 | L40S | L40S |
+| `gemma4-31b` | Gemma 4 31B | FP8 | L40S | L40S |
+| `qwen36-35b` | Qwen3.6-35B-A3B (MoE) | FP8 | H100 | **H100** |
+| `qwen36-27b-nvfp4`, `gemma4-31b-nvfp4` | (same models, dense) | NVFP4 | B200 | B200 |
+| `qwen36-35b-nvfp4`, `gemma4-26b-nvfp4` | (same models, MoE) | NVFP4 | B200 | B200 |
+| `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | 4×B200 | 4×B200 |
+| `glm53-flash` | GLM-5.3-Flash, FP8 build | FP8 | 4×B200 — `requires_review` | — (new) |
+| `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | 8×B200 — `requires_review` | — (new) |
+| `k2-horizon-375b` | K2-Horizon-375B-A23B (379B-A27B MoE) | FP8 | **8×RTX PRO 6000** (TP=8) — `requires_review` | — (new) |
+| `kimi-k3` | Kimi K3 (93L, 896 experts, **multimodal**) | compressed-tensors | **no UpCloud plan fits** | — (new) |
+| `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | 4×B200 — `requires_review` | — (new) |
+| `deepseek-v41-flash` | DeepSeek-V4.1-Flash (552B + 196B Engram MoE, **multimodal**) | MXFP4+MXFP8 | 4×B200 — `requires_review` | — (new) |
+| `deepseek-v4-pro-0813` | DeepSeek-V4-Pro-0813 (1.6T-A49B MoE) | FP4+FP8 | 8×B200 — `requires_review` | — (new) |
+| `glm52` | GLM-5.2 | FP8 | 8×B200 — `requires_review` (kept gated: ~36 €/h to test) | — |
 
-**The RTX PRO 6000 line.** 96 GB, compute capability 12.0. It is Blackwell, but a different family
-from the B200's 10.0. Every FP8 profile runs on it with room to spare, and so does **dense** NVFP4.
-At €1.65/h it is usually the tier with capacity when H100 and B200 are sold out. No profile has been
-measured on it, so those deployments print an untested warning and serve.
+**The RTX PRO 6000 line.** 96 GB, compute capability 12.0 — Blackwell, but a different family from
+the B200's 10.0. At €1.65/h for a single card and €6.60 for four, against €4.50 and €18.00 for the
+B200 equivalents, it is the default lane wherever it works, and it usually has capacity when H100
+and B200 are sold out. Every FP8 profile runs on it, and so does **dense** NVFP4. Multi-GPU plans
+have **no NVLink**, so tensor parallelism runs over PCIe. Nothing has been measured on any of it
+yet, so these deployments print an untested warning and serve — record what you measure.
 
-**NVFP4 MoE does not run on it.** Those weights use a CUTLASS grouped block-scaled GEMM that returns
-invalid output on cc 12.0 with a cu129 build, so the deploy refuses before any weights download.
-Profiles declare all of this themselves via `min_compute_capability`,
+**What keeps the rest on B200 is sparse attention, not quantisation.** Every remaining large model
+here is a DeepSeek-style sparse MLA (DSA) architecture, and that has no working SM120 path:
+[vllm#55757](https://github.com/vllm-project/vllm/issues/55757) reports GLM-5.3, GLM-5.2 and
+DeepSeek-V4 unservable on 8× RTX PRO 6000, and it fails *late* — a short-prompt smoke test passes
+and only realistic prompt lengths break. `glm53-flash-nvfp4` gets around it by carrying a pinned,
+third-party kernel overlay; the DeepSeek profiles keep their cc 12.0 gate until the upstream fixes
+land, with the exact trigger recorded in each profile.
+
+The older claim that NVFP4 MoE is broken on this card is **out of date**: that CUTLASS grouped-GEMM
+fault is reported fixed on cu130 builds, and much of the symptom was a separate silent fault
+([vllm#54189](https://github.com/vllm-project/vllm/issues/54189)) that zeroed every expert output.
+Profiles declare their own limits via `min_compute_capability`,
 `unsupported_compute_capabilities` and `untested_compute_capabilities`. Detail:
 [docs/gpu-spinner.md](docs/gpu-spinner.md#cost).
 
@@ -121,17 +139,18 @@ first run.
 needing an r580+ driver. The profile exists so the requirement is recorded and so it works the day a
 large enough tier appears; until then every preflight refuses it.
 
-**The H100 remains a full option** and is the validated tier for `qwen36-35b`. RTX PRO 6000 is
-cheaper today, GPU pricing moves, and the H100 rows have measured numbers behind them.
+**The H100 remains a full option** and is where `qwen36-35b` was measured. RTX PRO 6000 is cheaper
+today, GPU pricing moves, and the H100 rows have measured numbers behind them.
 
-The "validated tier" column means the profile has a dated live run in
-[docs/validation.md](docs/validation.md) — context, KV pool, concurrency and VRAM. Anything in the
-untested column should work and warns when you deploy it. Treat that run as a validation run and
-record what you measure. Eight profiles are gated behind `requires_review` (pass
-`--allow-unvalidated` to run anyway): `glm52`, `glm53` and `deepseek-v4-pro-0813` because an
-8×B200 node costs ~€36/h to test; `glm53-flash`, `k2-horizon-375b`, `deepseek-v41-flash` and `deepseek-v4-flash-vision` because
-they need four B200s and a container image outside the shared pin; and `kimi-k3` because no
-plan here fits it.
+The "Measured on" column means the profile has a dated live run in
+[docs/validation.md](docs/validation.md) — context, KV pool, concurrency and VRAM. Where the main
+lane differs, that lane should work and warns when you deploy it: treat the deployment as a
+validation run, then capture `bin/spin validate` **and `bin/spin soak`** and add the row. Nine
+profiles are gated behind `requires_review` (pass `--allow-unvalidated` to run anyway): `glm52`,
+`glm53` and `deepseek-v4-pro-0813` because an 8×B200 node costs ~€36/h to test; `glm53-flash`,
+`deepseek-v41-flash` and `deepseek-v4-flash-vision` because they need four B200s and a container
+image outside the shared pin; `k2-horizon-375b` and `glm53-flash-nvfp4` because they are large
+multi-GPU runs with no measurement behind them; and `kimi-k3` because no plan here fits it.
 
 All current model repos are **ungated** on Hugging Face, so no `HF_TOKEN` is required (but setting one
 in `.env` avoids the anonymous download throttle). **LoRA** adapter serving and **multi-model swap**
@@ -144,8 +163,8 @@ demand, chosen by the OpenAI `model` field:
 
 ```bash
 bin/spin swap-profiles                                 # list presets
-bin/spin up --swap-profile l40s --plan GPU-8xCPU-64GB-1xL40S
-bin/spin up --swap-profile rtxpro6000 --plan GPU-16xCPU-80GB-1xRTXPRO6000
+bin/spin up --swap-profile l40s                        # each preset names its own plan (swap_plan)
+bin/spin up --swap-profile rtxpro6000                  # ...pass --plan only to override
 ```
 
 Presets live in `ansible/swap-profiles/` (just a list of model names): `l40s`, `rtxpro6000` and

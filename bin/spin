@@ -60,6 +60,56 @@ tofu_init() {
 # Build operator-allowlist -var args from the environment, used by BOTH up and down so neither
 # depends on the api.ipify.org autodetect when OPERATOR_IP/OPERATOR_CIDRS is set.
 OPERATOR_TF_ARGS=()
+# --- Operator reachability -------------------------------------------------------------------
+# The firewall allowlists SSH(22) and HTTPS(443) to the operator CIDRs ONLY. Deploying from an
+# address outside them creates the server, starts billing it, and then times out waiting for SSH —
+# the box is unreachable for the whole run and nothing tells you why until 10 minutes later.
+# Check before anything is provisioned. Pure bash so this adds no dependency beyond curl.
+ip_to_int() { local IFS=. a b c d; read -r a b c d <<EOF
+$1
+EOF
+printf '%s' "$(( (a << 24) | (b << 16) | (c << 8) | d ))"; }
+
+cidr_covers() {   # $1=cidr (bare IP means /32), $2=dotted IP -> 0 when covered
+  local net bits ipi neti mask
+  net="${1%%/*}"; bits="${1##*/}"
+  [ "$bits" = "$1" ] && bits=32
+  case "$net" in *[!0-9.]*|"") return 1 ;; esac
+  case "$bits" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$bits" -ge 0 ] && [ "$bits" -le 32 ] || return 1
+  [ "$bits" -eq 0 ] && return 0
+  ipi="$(ip_to_int "$2")"; neti="$(ip_to_int "$net")"
+  mask=$(( (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+  [ $(( ipi & mask )) -eq $(( neti & mask )) ]
+}
+
+# Refuse to provision a box this machine cannot reach. Only meaningful when OPERATOR_CIDRS or
+# OPERATOR_IP pins the allowlist — with neither set the stack auto-detects this machine's address,
+# so it is reachable by construction.
+assert_operator_reachable() {
+  [ -n "${SKIP_REACHABILITY_CHECK:-}" ] && return 0
+  local allow="${OPERATOR_CIDRS:-${OPERATOR_IP:-}}"
+  [ -n "$allow" ] || return 0
+  local me; me="$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+  case "$me" in ''|*[!0-9.]*) warn "could not determine this machine's public IP; skipping the reachability check."; return 0 ;; esac
+  local c ok=""
+  local IFS=,
+  for c in $allow; do
+    c="$(printf '%s' "$c" | tr -d '[:space:]')"
+    [ -n "$c" ] || continue
+    if cidr_covers "$c" "$me"; then ok=1; break; fi
+  done
+  unset IFS
+  [ -n "$ok" ] && { log "Reachability OK — this machine ($me) is inside the operator allowlist."; return 0; }
+  die "this machine's public IP ($me) is NOT in the operator allowlist ($allow).
+    The firewall would drop SSH/HTTPS from here, so the server would bill while every connection
+    timed out. Add it to OPERATOR_CIDRS in .env, e.g.
+      OPERATOR_CIDRS=$allow,$me/32
+    as a SINGLE assignment (a later duplicate line silently wins). Editing the rule in the provider
+    console does NOT work: tofu owns the firewall and reverts it on the next apply.
+    To deploy anyway (e.g. from a jump host you reach another way): SKIP_REACHABILITY_CHECK=1."
+}
+
 build_operator_tf_args() {
   OPERATOR_TF_ARGS=()
   if [ -n "${OPERATOR_CIDRS:-}" ]; then
@@ -80,6 +130,22 @@ build_operator_tf_args() {
 state_plan() {
   "$TOFU" -chdir="$EPHEMERAL_DIR" show -json 2>/dev/null \
     | jq -r '.values.root_module.resources[]? | select(.address=="upcloud_server.gpu") | .values.plan // empty' 2>/dev/null | head -1
+}
+
+# Each model profile / swap preset names the plan it is meant to run on (min_plan / swap_plan), and
+# `up` deploys that when no --plan is given, so the tier no longer has to be remembered per model.
+# Read with sed rather than a YAML parser on purpose: bin/spin's dependency list (top of file) is
+# curl/jq/tofu/ansible-playbook/ssh, and this must not add python3 to it. Anything that is not a
+# well-formed plan identifier is ignored, so a profile may legitimately omit the field (kimi-k3 does)
+# and callers fall through to the next source.
+profile_plan() {
+  local file="$1" key="$2" value
+  [ -f "$file" ] || return 0
+  value="$(sed -n "s/^${key}: *\"\{0,1\}\([A-Za-z0-9-]*\)\"\{0,1\}.*/\1/p" "$file" | head -1)"
+  case "$value" in
+    GPU-[0-9]*xCPU-[0-9]*GB-[0-9]*x*) printf '%s' "$value" ;;
+    *) return 0 ;;
+  esac
 }
 
 refresh_firewall() {
@@ -110,15 +176,37 @@ api() { # api METHOD /path [json-body]  (bounded: a hung API call must not hang 
 }
 server_state() { api GET "/server/$1" 2>/dev/null | jq -r '.server.state // empty'; }
 
+# Two failure modes hide behind "waiting for SSH", and both used to cost the full timeout on a
+# GPU that is already billing:
+#   * the key is not installed  -> the box answers and refuses (Permission denied). Terminal; the
+#     wait can never succeed, so fail immediately and say which key is missing.
+#   * the box is still booting  -> no answer at all. Worth waiting for, and a 4-GPU tier with a
+#     large attached disk has been measured taking OVER 10 minutes, so the old 10-minute ceiling
+#     was too low. Default is now ~20 min, overridable with SSH_WAIT_TRIES.
 wait_ssh() {
-  local host="$1" i
+  local host="$1" i out tries="${SSH_WAIT_TRIES:-240}"
   [ -n "$host" ] || die "no ssh_host available."
-  log "Waiting for SSH on $host ..."
-  for i in $(seq 1 120); do
-    ssh "${SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 "root@$host" true 2>/dev/null && return 0
-    [ "$i" -eq 120 ] && die "timed out waiting for SSH after ~10 min."
+  log "Waiting for SSH on $host (up to ~$(( tries * 5 / 60 )) min) ..."
+  # stderr is captured into a variable rather than a temp file: a `trap ... RETURN` that removes a
+  # `local` temp path fires after the variable has left scope, which under `set -u` kills the
+  # script AFTER a successful deploy.
+  for i in $(seq 1 "$tries"); do
+    if out="$(ssh "${SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 "root@$host" true 2>&1)"; then
+      return 0
+    fi
+    case "$out" in *"Permission denied"*)
+      die "SSH reached $host but AUTHENTICATION failed (Permission denied (publickey)).
+    The box is up and the firewall is letting you through — it just does not trust this machine's
+    key. ssh_public_keys is create-time metadata, so editing terraform.tfvars will NOT fix a server
+    that already exists. To fix the running box, append this machine's public key to
+    /root/.ssh/authorized_keys there from a machine that can already log in; add it to
+    terraform.tfvars as well so the next build keeps it. This machine offers:
+      $(ssh-keygen -lf ~/.ssh/id_ed25519.pub 2>/dev/null | awk '{print $2}')" ;;
+    esac
     sleep 5
   done
+  die "timed out waiting for SSH after ~$(( tries * 5 / 60 )) min.
+    If this tier is simply slow to boot, raise it: SSH_WAIT_TRIES=360 bin/spin up ..."
 }
 
 usage() {
@@ -132,6 +220,10 @@ Usage: bin/spin <command> [options]
                          loses cached weights + the stable IP/cert. Requires --yes.
   up [--model M] [--plan P] [--swap-profile NAME] [--shutdown-at HH:MM] [--shutdown-tz TZ] [--no-shutdown]
                          Provision the GPU server, then deploy vLLM via Ansible.
+                         --plan is OPTIONAL: without it, the tier comes from the profile's min_plan
+                         (or the preset's swap_plan), so each model lands on the plan it is meant
+                         for. Pass --plan to override. On an existing server the live plan wins, and
+                         a mismatch with the profile's is an error rather than a silent resize.
                          --swap-profile NAME serves several models on one box via llama-swap (one in
                          VRAM at a time); presets live in ansible/swap-profiles/ (see swap-profiles).
                          --allow-unvalidated lets a requires_review profile deploy (needs a big --plan).
@@ -319,15 +411,32 @@ cmd_up() {
   fi
   [ -n "${VLLM_API_KEY:-}" ] || die "VLLM_API_KEY not set (vLLM auth)."
   check_tfvars
+  # Plan resolution, highest priority first: an explicit --plan, then the plan of a server that
+  # already exists, then the one the profile/preset names, then the OpenTofu default.
+  local want_plan=""
+  if [ -n "$swap_profile" ]; then want_plan="$(profile_plan "$swap_file" swap_plan)"
+  else want_plan="$(profile_plan "ansible/models/${model}.yml" min_plan)"; fi
+
   # Guard against an unintended resize: with no --plan, a re-run on an EXISTING server would plan
   # the config default against the live box (auto-approve!). Inherit the current plan from state.
   if [ -z "$plan" ] && [ -n "$existing" ]; then
     plan="$(state_plan)"
+    # A live box on the wrong tier is worse than an error here: preflight only refuses AFTER the
+    # weights download, so an L40S inherited under a 390 GB profile burns the pull first.
+    if [ -n "$plan" ] && [ -n "$want_plan" ] && [ "$plan" != "$want_plan" ]; then
+      die "the existing server is $plan but '${swap_profile:-$model}' expects $want_plan.
+    Pass --plan explicitly to override, or 'bin/spin down' first to rebuild on the right tier."
+    fi
     [ -n "$plan" ] && log "No --plan given; keeping the existing server's plan ($plan)."
+  fi
+  if [ -z "$plan" ] && [ -n "$want_plan" ]; then
+    plan="$want_plan"
+    log "No --plan given; using $plan from the ${swap_profile:-$model} profile."
   fi
   [ -n "$plan" ] && tf_args+=(-var "plan=$plan")
   build_operator_tf_args
   tf_args+=(${OPERATOR_TF_ARGS[@]+"${OPERATOR_TF_ARGS[@]}"})
+  assert_operator_reachable
   [ -n "$sd_enabled" ] && ans_args+=(-e "auto_shutdown_enabled=$sd_enabled")
   [ -n "$sd_at" ]      && ans_args+=(-e "auto_shutdown_time=$sd_at")
   [ -n "$sd_tz" ]      && ans_args+=(-e "auto_shutdown_timezone=$sd_tz")
@@ -355,8 +464,9 @@ cmd_up() {
   if ! "$TOFU" -chdir="$EPHEMERAL_DIR" apply -auto-approve ${tf_args[@]+"${tf_args[@]}"} 2>&1 | tee "$apply_log"; then
     if grep -qiE 'SERVER_RESOURCES_UNAVAILABLE|resources?[ _]unavailable|out of stock|no (host|capacity)' "$apply_log"; then
       rm -f "$apply_log"
-      die "UpCloud has no '${plan:-GPU-8xCPU-64GB-1xL40S}' capacity in fi-hel2 right now.
-    Retry shortly, or try another tier:
+      die "UpCloud has no '${plan:-the default plan}' capacity in fi-hel2 right now.
+    Retry shortly, or override the profile's tier with another that fits the model
+    (tiers and prices: tests/plans.txt and docs/gpu-spinner.md):
       bin/spin up --model $model --plan GPU-16xCPU-80GB-1xRTXPRO6000   # 96 GB, usually available
       bin/spin up --model $model --plan GPU-12xCPU-240GB-1xH100        # or ...-1xB200"
     fi

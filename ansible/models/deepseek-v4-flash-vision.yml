@@ -8,10 +8,25 @@
 # vllm-project/vllm#54566. The official wheel routes this checkpoint to the TEXT-ONLY class and fails
 # on the vision tensors, so this profile overrides the shared image pin with the vision build.
 #
-# HARDWARE: B200 only. The experts are FP4 MoE, and the CUTLASS grouped block-scaled GEMM behind
-# NVFP4 MoE returns wrong output on RTX Blackwell (compute capability 12.0) unless FlashInfer is
-# patched and built against CUDA 13.0 (compute_120f); the images here are cu129, and
-# vllm-project/vllm#35566 is still open. Hence unsupported_compute_capabilities: [12.0].
+# HARDWARE: B200 for now. The VRAM would fit 4x RTX PRO 6000 comfortably — the recipe's ~202 GB
+# budget across 380 GB, at 6.60 EUR/h against 18.00 — and min_vram_gb 90 already clears a 95 GB
+# card, so the cc 12.0 gate below is the ONLY thing holding this on B200. Do not relax it casually.
+#
+# WHAT THE GATE IS REALLY FOR. The FP4-MoE explanation this profile used to carry is no longer the
+# durable one: the CUTLASS grouped block-scaled GEMM fault is reported fixed on cu130 builds
+# (flashinfer-ai/flashinfer#2708 rolled into vLLM's FlashInfer pin), and a large share of the
+# "NVFP4 MoE returns garbage" reports turned out to be vllm-project/vllm#54189 instead — an
+# uninitialised w13_input_scale zeroing every expert output on weight-only checkpoints. What still
+# blocks this model on sm_120 is SPARSE ATTENTION: vllm-project/vllm#55757 reports DeepSeek-V4
+# unservable there, and the failure only shows at realistic prompt lengths, not on a smoke test.
+#
+# WHEN TO OPEN THE LANE. vllm-project/vllm#41834 adds SM12x support for DeepSeek V4 Flash; as of
+# 2026-09-19 it is 288 commits over 221 files with merge conflicts, and its tagged preview
+# (sm120-pr-41834-stable-preview-20260809, aa0d513027) is validated on
+# deepseek-ai/DeepSeek-V4-Flash-0731 — a TEXT checkpoint this repo has no profile for, so it is not
+# direct evidence for the vision build. Re-check that tag, then: drop
+# unsupported_compute_capabilities, set min_plan to GPU-64xCPU-320GB-4xRTXPRO6000, and add the
+# overlay to vllm_plugins the way glm53-flash-nvfp4.yml does.
 #
 # requires_review: only NVIDIA GB200 NVL4 (TP4 + expert parallel) and AMD MI350X have a published
 # vision run. UpCloud has neither, so the nearest verified-equivalent topology is 4x B200 with
@@ -53,8 +68,9 @@ min_vram_gb: 90    # per-GPU floor: ~202 GB budget across TP=4, plus KV headroom
 min_compute_capability: 10.0
 unsupported_compute_capabilities: [12.0]
 unsupported_reason: >-
-  its FP4 MoE experts need the CUTLASS grouped block-scaled GEMM, which returns invalid output on
-  RTX Blackwell (cc 12.0) without a FlashInfer build patched against CUDA 13.0
+  DeepSeek-style sparse MLA has no working attention path on RTX Blackwell (cc 12.0) —
+  vllm-project/vllm#55757, where a short-prompt smoke test passes and realistic prompts fail.
+  vllm-project/vllm#41834 is the open SM12x enabler; see the note at the top of this profile
 validated: false     # newly added — no live run on this account yet
 requires_review: true
 health_wait_retries: 150   # x10s = 25 min — ~168 GB of weights plus TP=4 engine init and DSpark setup

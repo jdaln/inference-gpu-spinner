@@ -1,7 +1,7 @@
 ---
 # Multi-model swap preset — single B200 (179 GB), NVFP4 checkpoints. Each model loads on demand, one
 # in VRAM at a time. NVFP4 runs only on Blackwell (B200).
-# Deploy:  bin/spin up --swap-profile b200-nvfp4 --plan GPU-12xCPU-240GB-1xB200
+# Deploy:  bin/spin up --swap-profile b200-nvfp4
 #
 # `swap_profiles` references ansible/models/<name>.yml by name (repo/context/args come from there).
 # All four are small NVFP4 weights (~14–21 GB each), so the whole set caches comfortably on /data.
@@ -11,3 +11,6 @@ swap_profiles:
   - gemma4-26b-nvfp4     # Gemma 4 26B-A4B (MoE)
   - gemma4-31b-nvfp4     # Gemma 4 31B (dense)
 # swap_idle_ttl: 1800   # optional override (seconds a backend stays warm after its last request)
+
+# Plan bin/spin deploys for this preset when --plan is not given (see tests/plans.txt).
+swap_plan: "GPU-12xCPU-240GB-1xB200"

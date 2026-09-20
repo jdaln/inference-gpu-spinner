@@ -10,16 +10,29 @@
 # main after the v0.29.0 release, so this profile uses the same dated nightly as
 # deepseek-v41-flash. Replace both with a release tag once one carries the architecture.
 #
-# WHY FP8 AT TP4. recipes.vllm.ai/IFM/K2-Horizon-375B-A23B serves
-# the BF16 repo with --tensor-parallel-size 8 --dtype bfloat16, and its only verified run is an
-# 8-GPU MI355X node. At ~758 GB that would need 8x B200 here, about 36 EUR/h. The FP8 build is
-# ~391 GB, fits 4x B200 (768 GB) at TP4 with room for KV, and halves the hourly cost. Neither
-# configuration has a live run on this account; if you would rather reproduce the published one,
-# switch model_repo to IFM/K2-Horizon-375B-A23B, set tensor_parallel_size to 8, add
-# "--dtype" / "bfloat16" to extra_vllm_args, and set min_plan to GPU-96xCPU-1920GB-8xB200.
+# WHY FP8 AT TP8 ON RTX PRO 6000. recipes.vllm.ai/IFM/K2-Horizon-375B-A23B serves the BF16 repo
+# with --tensor-parallel-size 8 --dtype bfloat16, and its only verified run is an 8-GPU MI355X
+# node. At ~758 GB that would need 8x B200 here, about 36 EUR/h. The FP8 build is ~391 GB
+# (367.8B params in FP8 plus 11.3B in BF16), which changes what fits:
+#   8x RTX PRO 6000   768 GB, 13.20 EUR/h  <- this profile: ~48.8 GB/rank, ~36 GB of KV per rank
+#   4x B200           768 GB, 18.00 EUR/h  <- the previous lane, at TP=4
+#   4x RTX PRO 6000   384 GB               <- does NOT fit: 391 GB of weights alone
+# TP=8 is both cheaper than the 4x B200 lane and closer to the published run, so the TP=4
+# arrangement this profile used to carry (chosen only to halve the B200 bill) has no reason left.
+#
+# The 4x B200 path is still reachable without editing this file — extra vars outrank a profile:
+#   bin/spin up --model k2-horizon-375b --allow-unvalidated \
+#     --plan GPU-48xCPU-960GB-4xB200 -e tensor_parallel_size=4
+#
+# NO NVLINK on the RTX PRO 6000 plans: TP=8 runs over PCIe across eight cards, which is the
+# heaviest communication pattern in this repo and is unmeasured. If engine init hangs inside NCCL
+# rather than failing, add NCCL_P2P_DISABLE: 1 to extra_env — it costs throughput, so do not set
+# it pre-emptively. Attention here is standard partial-RoPE, not DeepSeek-style sparse MLA, so
+# this profile is unaffected by the SM120 sparse-attention gap that blocks the GLM and DeepSeek
+# MoE profiles (vllm-project/vllm#55757).
 #
 # max_model_len 131072 is the value the verified MI355X run used, not the checkpoint's 524,288
-# native limit. With ~98 GB of weights per rank against 179 GB there is headroom to raise it; do
+# native limit. With ~48.8 GB of weights per rank against 95 GB there is headroom to raise it; do
 # that once a live run shows the KV pool vLLM reports at startup.
 #
 # --trust-remote-code and --enable-expert-parallel are both from the recipe's launch command.
@@ -32,7 +45,7 @@
 model_repo: "IFM/K2-Horizon-375B-A23B-FP8"
 served_name: "k2-horizon-375b"
 vllm_image_override: "vllm/vllm-openai:cu129-nightly-cd10ed6f9f6b37a8ace9cf380007e66fe12ec0c3"
-tensor_parallel_size: 4
+tensor_parallel_size: 8
 max_model_len: 131072
 gpu_memory_utilization: 0.90
 dtype: "auto"
@@ -45,8 +58,9 @@ extra_vllm_args:
   - "--tool-call-parser"
   - "k2_horizon"
   - "--enable-auto-tool-choice"
-min_plan: "GPU-48xCPU-960GB-4xB200"
-min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~98 GB of weights per rank at TP=4
+min_plan: "GPU-128xCPU-640GB-8xRTXPRO6000"
+min_vram_gb: 90    # per-GPU floor: RTX PRO 6000 reports 95; ~48.8 GB per rank at TP=8
 validated: false   # newly added — no live run on this account yet
+untested_compute_capabilities: [12.0]   # RTX PRO 6000 is the target tier; nothing measured there
 requires_review: true
-health_wait_retries: 450   # x10s = 75 min — ~391 GB to pull, then TP=4 init
+health_wait_retries: 450   # x10s = 75 min — ~391 GB to pull, then TP=8 init

@@ -11,9 +11,28 @@
 # this model and that the dedicated vllm/vllm-openai:qwen38-flash-next build must be used. The
 # shared image pin does not carry the qwen4_exp architecture.
 #
-# WHY 4x H100. This is the configuration recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next verified with
-# measured throughput (~1,430 output tok/s at concurrency 64, 1024-in/256-out), and UpCloud sells it
-# as GPU-48xCPU-960GB-4xH100. Two flags come with that hardware and are set below:
+# WHY 4x RTX PRO 6000. recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next verified 4x H100 with measured
+# throughput (~1,430 output tok/s at concurrency 64, 1024-in/256-out), sold here as
+# GPU-48xCPU-960GB-4xH100 at ~7.16 EUR/h. GPU-64xCPU-320GB-4xRTXPRO6000 is 6.60 EUR/h for 96 GB
+# cards instead of 80 GB, so it is the default lane; the H100 tier stays a one-flag fallback
+# (--plan GPU-48xCPU-960GB-4xH100) and is the only one with measured numbers behind it.
+#
+# The PLE offload is still REQUIRED at 96 GB. The 51B N-gram table is replicated per rank, not
+# sharded — that is why it is required on an 80 GB H100 and optional on a 141 GB H200. At
+# 95 GB x 0.85 = 80.75 GB per rank the arithmetic is ~51 GB of table plus ~33.6 GB of sharded
+# weights, so it does not fit without the offload either. With it, ~33.6 GB per rank leaves ~47 GB
+# for KV, and the plan has 320 GB of host RAM against the ~51 GB the table needs.
+#
+# --moe-backend triton is deliberately KEPT on this lane even though the note below calls it a
+# Hopper accommodation: it works on every generation, and dropping it on RTX Blackwell is a
+# measurement nobody has taken. Try it after a first clean run, not during one.
+#
+# NO NVLINK on the RTX PRO 6000 plans: TP=4 runs over PCIe. If engine init hangs inside NCCL
+# rather than failing, add NCCL_P2P_DISABLE: 1 to extra_env. Qwen Sparse Attention is NOT affected
+# by the SM120 sparse-MLA gap that blocks the GLM and DeepSeek MoE profiles — vllm-project/vllm#55430
+# is a prefill tuning PR enabled on SM121 only, with no behaviour change for other GPUs.
+#
+# Two flags come with the H100 hardware and are set below:
 #   VLLM_PLE_CPU_OFFLOAD=1  — 80 GB-class GPUs cannot hold the 51B N-gram embedding table on top of
 #                             the weights, so it lives in host RAM and rows are prefetched
 #                             asynchronously. The plan has 960 GB of RAM against the ~51 GB needed.
@@ -69,9 +88,8 @@ extra_vllm_args:
   - "--tool-call-parser"
   - "qwen3_coder"
   - "--enable-auto-tool-choice"
-min_plan: "GPU-48xCPU-960GB-4xH100"
-min_vram_gb: 76                  # per-GPU floor: ~43 GiB of weights per rank at TP=4, plus KV
+min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
+min_vram_gb: 76                  # per-GPU floor: ~43 GiB per rank at TP=4; keeps both 4xH100 and 4xRTXPRO6000
 validated: false                 # newly added — no live run on this account yet
-untested_compute_capabilities: [12.0]   # 4x RTX PRO 6000 also clears the gates; drop --moe-backend
-                                        # triton and the PLE offload there, and note it has no NVLink
+untested_compute_capabilities: [12.0]   # RTX PRO 6000 is now the default lane; nothing measured there
 health_wait_retries: 200         # x10s = 33 min — ~186 GB download, TP=4 init, N-gram table offload

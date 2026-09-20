@@ -26,10 +26,13 @@
 # DISK: ~328 GB of weights. Set WEIGHTS_SIZE_GB to at least 400 and re-run
 # bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 88/mo standing.
 #
-# An NVFP4 build exists (RedHatAI/GLM-5.3-Flash-NVFP4, ~198 GB) with 4-bit MoE experts and is not
-# used here: NVFP4 MoE takes the CUTLASS grouped block-scaled GEMM path that returns invalid output
-# on RTX Blackwell, and on B200 the native FP8 checkpoint is the one the recipe verifies. It would
-# be the checkpoint to try if you wanted this on two B200s instead of four.
+# NOT ON RTX PRO 6000 — use glm53-flash-nvfp4.yml instead. This model's MLA layers are rope-free
+# (qk_rope_head_dim: 0) and no stock vLLM build has an SM120 kernel for that shape; three failure
+# modes are catalogued in vllm-project/vllm#53963. The trap is that it does not fail cleanly:
+# vllm-project/vllm#55757 reports DSA models passing a short-prompt smoke test on sm_120 and only
+# dying at realistic prompt lengths, so unsupported_compute_capabilities refuses it up front.
+# glm53-flash-nvfp4.yml serves the same model on 4x RTX PRO 6000 at 6.60 EUR/h by carrying an
+# out-of-tree kernel; this profile stays the plain, overlay-free FP8 path on B200.
 model_repo: "zai-org/GLM-5.3-Flash"
 served_name: "glm53-flash"
 vllm_image_override: "vllm/vllm-openai:glm53-flash"
@@ -49,6 +52,11 @@ extra_vllm_args:
 min_plan: "GPU-48xCPU-960GB-4xB200"
 min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~306 GiB of weights across TP=4
 min_compute_capability: 10.0   # FP8 KV cache for this model is Blackwell-only; Hopper needs BF16 KV
+unsupported_compute_capabilities: [12.0]
+unsupported_reason: >-
+  its rope-free sparse MLA (qk_rope_head_dim 0) has no SM120 attention or KV path in any stock vLLM
+  build (vllm-project/vllm#53963), and the failure only appears at realistic prompt lengths
+  (vllm-project/vllm#55757). glm53-flash-nvfp4 is the RTX PRO 6000 path
 validated: false   # newly added — no live run on this account yet
 requires_review: true
 health_wait_retries: 400   # x10s = 67 min — ~328 GB to pull, then TP=4 init

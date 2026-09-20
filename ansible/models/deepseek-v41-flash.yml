@@ -18,9 +18,24 @@
 # tables alone are 196.6B parameters (~183 GiB) and dominate everything except the experts. KV is a
 # small share of that budget: weights and batch size set the capacity limit, not the cache.
 #
-# B200 ONLY. Routed expert weights are MXFP4, so this takes the same grouped block-scaled GEMM path
-# that returns invalid output on RTX Blackwell (cc 12.0) with a cu129 build. See the NVFP4 MoE
-# profiles for the same restriction and the open upstream issue.
+# B200 FOR NOW, and the closest of the DeepSeek profiles to an RTX PRO 6000 lane. 8x RTX PRO 6000
+# is 760 GB against the recipe's 614 GB floor, at 13.20 EUR/h versus 18.00 for 4x B200 — so the
+# lane would be TP=8 on GPU-128xCPU-640GB-8xRTXPRO6000. 4x RTX PRO 6000 (380 GB) does not fit.
+#
+# WHAT ACTUALLY BLOCKS IT. Not the MXFP4 experts: that grouped block-scaled GEMM fault is reported
+# fixed on cu130 builds, and much of the "4-bit MoE returns garbage" history turned out to be
+# vllm-project/vllm#54189 (an uninitialised activation scale zeroing every expert) rather than the
+# kernel. The live blocker is sparse attention — vllm-project/vllm#55757 reports DeepSeek-style
+# sparse MLA unservable on sm_120, passing a short-prompt smoke test and failing at realistic
+# prompt lengths.
+#
+# WHEN TO OPEN THE LANE. vllm-project/vllm#54929 covers exactly this model's geometry (the 512
+# NoPE + 64 RoPE = 576 head layout) and, unlike #41834, is a small mergeable PR — 12 files, marked
+# mergeable as of 2026-09-19. When it lands in a release image: drop
+# unsupported_compute_capabilities, set tensor_parallel_size to 8, min_plan to
+# GPU-128xCPU-640GB-8xRTXPRO6000 and min_vram_gb to 90. Note the profile-level overlay route in
+# glm53-flash-nvfp4.yml exists if you would rather not wait — that plugin is NoPE-specific and will
+# NOT serve this geometry, so it would need a different one.
 #
 # --language-model-only skips the vision encoder entirely, which drops the ViT and aligner from the
 # load and frees that VRAM for KV. The verified GB200 runs (TP4 and 1P1D) were text-only, so that is
@@ -73,8 +88,9 @@ min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); 614 GB total across TP
 min_compute_capability: 10.0
 unsupported_compute_capabilities: [12.0]
 unsupported_reason: >-
-  its MXFP4 routed experts need the CUTLASS grouped block-scaled GEMM, which returns invalid output
-  on RTX Blackwell (cc 12.0) without a FlashInfer build patched against CUDA 13.0
+  DeepSeek-style sparse MLA has no working attention path on RTX Blackwell (cc 12.0) —
+  vllm-project/vllm#55757, where a short-prompt smoke test passes and realistic prompts fail.
+  vllm-project/vllm#54929 is the open fix for this geometry; see the note at the top of this profile
 validated: false     # newly added — no live run on this account yet
 requires_review: true
 health_wait_retries: 600   # x10s = 100 min — ~511 GB to pull, then TP=4 init and graph capture

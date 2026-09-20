@@ -9,7 +9,7 @@ variable "hostname" {
 }
 
 variable "plan" {
-  description = "UpCloud GPU plan. Default L40S — the smallest tier that fits the current FP8 models (the L4's 24 GB fits none of them). Use --plan for RTX PRO 6000 (GPU-16xCPU-80GB-1xRTXPRO6000, 96 GB), H100 (GPU-12xCPU-240GB-1xH100) or B200 (GPU-12xCPU-240GB-1xB200). Identifiers: https://upcloud.com/docs/products/gpu-servers/configurations/"
+  description = "UpCloud GPU plan. bin/spin normally supplies this from the model profile's min_plan (or a swap preset's swap_plan), so this default only applies when nothing else resolves — it stays L40S to match the default model, qwen36. The full allowlist is tests/plans.txt. Identifiers: https://upcloud.com/docs/products/gpu-servers/configurations/"
   type        = string
   default     = "GPU-8xCPU-64GB-1xL40S"
 }

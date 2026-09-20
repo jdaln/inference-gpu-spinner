@@ -8,3 +8,9 @@ enable_lora: false
 max_lora_rank: 16
 max_loras: 4
 lora_modules: []   # e.g. [{ name: "my-adapter", path: "org/my-lora-hf-repo" }]
+
+# Out-of-tree vLLM plugins (see tasks/plugins.yml). A profile sets vllm_plugins when its GPU needs a
+# kernel no released image carries; each entry is built once per pinned commit under this root, on
+# the persistent disk, and mounted read-only into the container.
+vllm_plugins: []
+vllm_plugin_root: "{{ data_root }}/ext"

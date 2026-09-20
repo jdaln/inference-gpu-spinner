@@ -141,6 +141,48 @@ Two values are required and have no defaults:
 - `ssh_public_keys` — the keys installed for root login on the GPU box. Without one you cannot
   reach the server you just paid for.
 
+**Deploying from more than one machine.** Both gates that let you reach the box are per-machine,
+and both fail in ways that look like something else:
+
+- **The key must be in `ssh_public_keys` before the server is created.** `login { keys = ... }` in
+  `terraform/providers/upcloud/main.tf` is create-time metadata, so adding a key to
+  `terraform.tfvars` does not change a server that already exists — it applies to the next one
+  built. A machine whose key is missing gets `Permission denied (publickey)`, which `bin/spin`
+  currently cannot distinguish from a box that is still booting, so it waits the full SSH timeout
+  first. To add a key to a *running* box, append it to `~/.ssh/authorized_keys` there from a
+  machine that can already log in, and put it in `terraform.tfvars` as well so the next build
+  keeps it.
+- **The machine's public IP must be in `OPERATOR_CIDRS`.** The firewall allowlists SSH(22) and
+  HTTPS(443) to those ranges only, so `bin/spin validate` and `bin/spin soak` need it too, not
+  just the deploy. `bin/spin up` refuses to provision when this machine's address is outside the
+  list, rather than creating a server it cannot reach. Set it as a **single** assignment in
+  `.env` — the file is sourced top-to-bottom, so a second `OPERATOR_CIDRS=` line silently wins:
+
+      OPERATOR_CIDRS=198.51.100.0/24,203.0.113.7/32
+
+  Editing the rule in the provider console does not work: OpenTofu owns
+  `upcloud_firewall_rules.gpu` and reverts it on the next apply. `SKIP_REACHABILITY_CHECK=1`
+  bypasses the check for a jump-host setup you reach another way.
+
+**A changing egress address.** If the control machine's public IP rotates — a mobile or tethered
+link, or a VPN with several exits — the allowlist goes stale mid-run and every later step fails as
+a timeout rather than as a permission error. Measured on 2026-09-20: switching networks moved the
+address twice inside one session. Two consequences:
+
+- An **in-flight deploy dies** when the address changes, because Ansible multiplexes over one SSH
+  connection (`ControlMaster` in `ansible.cfg`) and that session cannot survive it. The play ends
+  with `UNREACHABLE!` and `failed=0` — no task actually failed. Re-running `bin/spin up` resumes:
+  the weights are on `/data` and the vLLM container runs detached, so a dropped control connection
+  does not interrupt a download in progress.
+- If the address rotates within a known range, allowlisting that range is steadier than chasing
+  single addresses. Weigh it against the exposure: SSH and HTTPS become reachable from the whole
+  range, on a box with key-only auth and no password login. Narrow it again once back on a stable
+  link.
+
+**Timeouts.** `bin/spin up` waits ~20 minutes for SSH; a 4-GPU tier with a large attached disk has
+been measured taking over 10. Raise it with `SSH_WAIT_TRIES=360` (each try is 5s). Authentication
+failures are not waited out — they fail immediately with the offending key fingerprint.
+
 Everything else in that file is an optional override, including `plan`, which defaults to
 `GPU-8xCPU-64GB-1xL40S`.
 
@@ -300,12 +342,16 @@ model that takes an hour to load, start early or turn the timer off for that run
 Profiles live in `ansible/models/`, one file per model and quantisation. Pick one with `--model`.
 The README carries the full table; the rules behind it are short:
 
+- **You usually do not pick a tier.** Each profile names the plan it is meant for, and `bin/spin up
+  --model <name>` deploys that. Pass `--plan` only to override it. On a server that already exists
+  the live plan wins, and a mismatch with the profile's is an error rather than a silent resize.
 - FP8 profiles run on any tier from the L40S up.
 - NVFP4 profiles need Blackwell. They are roughly half the size and faster, and they will not load
   on an L40S or H100 at all.
 - Which Blackwell tier matters. The RTX PRO 6000 (96 GB, €1.65/h) is compute capability 12.0; the
-  B200 (192 GB, €4.50/h) is 10.0. Dense NVFP4 runs on both. NVFP4 **MoE** runs only on the B200: on
-  12.0 its kernels return invalid output, so those profiles refuse to deploy there.
+  B200 (192 GB, €4.50/h) is 10.0. Dense NVFP4 runs on both. What keeps the big MoE models on B200
+  is **sparse attention**, which has no working sm_120 path (vllm#55757) — and it fails late, so a
+  short smoke test passing is not evidence it works.
 - Every profile declares the VRAM, GPU generation and GPU count it needs. A deploy onto the wrong
   plan fails in preflight, before vLLM starts and before any weights download. It will not run out
   of memory on a GPU you are already paying for.
@@ -316,16 +362,18 @@ prints a warning. Treat that deployment as a validation run: capture `bin/spin v
 `bin/spin soak` and add the row to [validation.md](validation.md).
 
 H100 and B200 both run short of capacity regularly. The RTX PRO 6000 is usually available and covers
-every FP8 profile and the two dense NVFP4 ones. It has no measured runs yet, so expect the untested
-warning. The H100 remains the validated tier for `qwen36-35b`.
+every FP8 profile and the two dense NVFP4 ones, and it is the default lane for `qwen38-flash-next`,
+`glm53-flash-nvfp4` and `k2-horizon-375b`. It has no measured runs yet, so expect the untested
+warning — and when you get one, capture `bin/spin validate` and `bin/spin soak` and add the row.
+The H100 remains where `qwen36-35b` was measured.
 
 To serve several models from one endpoint, use a swap preset. One model sits in VRAM at a time and
 the rest load on demand, so size the box for the largest member of the set, not their sum:
 
 ```bash
 bin/spin swap-profiles
-bin/spin up --swap-profile l40s --plan GPU-8xCPU-64GB-1xL40S
-bin/spin up --swap-profile rtxpro6000 --plan GPU-16xCPU-80GB-1xRTXPRO6000
+bin/spin up --swap-profile l40s          # the preset names its own plan (swap_plan)
+bin/spin up --swap-profile rtxpro6000
 ```
 
 Presets are just lists of profile names in `ansible/swap-profiles/`; add one by dropping in a file.

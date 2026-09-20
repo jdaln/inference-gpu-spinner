@@ -53,6 +53,24 @@ jobs:
             ansible-playbook tests/render-profile.yml -e "profile=$(basename "$f" .yml)" >/dev/null || { echo "::error::profile $f fails to render"; exit 1; }
             echo "rendered: $f"
           done
+      - name: every profile's plan is a real UpCloud plan
+        # bin/spin deploys min_plan / swap_plan when --plan is omitted, so a typo here reaches
+        # `tofu apply` on a paid resource instead of just printing a wrong message.
+        run: |
+          rc=0
+          check() {   # check <file> <key>
+            plan=$(sed -n "s/^$2: *\"\{0,1\}\([A-Za-z0-9-]*\)\"\{0,1\}.*/\1/p" "$1" | head -1)
+            [ -n "$plan" ] || return 0   # absent is allowed: bin/spin falls through to the default
+            if ! grep -qE "^${plan}[[:space:]]" tests/plans.txt; then
+              echo "::error file=$1::$2 '$plan' is not listed in tests/plans.txt"; rc=1
+            else
+              echo "$(basename "$1") -> $plan"
+            fi
+          }
+          for f in ansible/models/*.yml; do check "$f" min_plan; done
+          for f in ansible/swap-profiles/*.yml; do check "$f" swap_plan; done
+          exit $rc
+
       - name: every swap preset resolves + renders (llama-swap)
         run: |
           for f in ansible/swap-profiles/*.yml; do

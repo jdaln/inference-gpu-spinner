@@ -33,6 +33,12 @@ services:
     environment:
       - HF_HOME=/root/.cache/huggingface
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+{% if (vllm_plugin_mounts | default([])) | length > 0 %}
+      # Out-of-tree plugin overlays (roles/vllm/tasks/plugins.yml). vLLM loads vllm.general_plugins
+      # entry points from PYTHONPATH in every process; each plugin stays inert unless the profile
+      # also sets its own environment variable below.
+      - PYTHONPATH={{ vllm_plugin_mounts | map('regex_replace', '^.*/', '/opt/vllm-plugins/') | join(':') }}
+{% endif %}
 {% for k, v in (extra_env | default({})).items() %}
       - {{ k }}={{ v }}
 {% endfor %}
@@ -43,6 +49,9 @@ services:
       - "{{ compose_dir }}/.env"
     volumes:
       - {{ hf_cache_dir }}:/root/.cache/huggingface
+{% for m in vllm_plugin_mounts | default([]) %}
+      - {{ m }}:/opt/vllm-plugins/{{ m | basename }}:ro
+{% endfor %}
     ports:
       - "127.0.0.1:{{ vllm_port }}:8000"   # never exposed publicly; Caddy fronts it
     deploy:
