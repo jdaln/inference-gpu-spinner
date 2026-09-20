@@ -96,6 +96,15 @@ cmd_up() {
       --plan)         plan="$2";  flags_explicit=1; shift 2 ;;
       --swap-profile) swap_profile="$2"; flags_explicit=1; shift 2 ;;
       --allow-unvalidated) ans_args+=(-e allow_unvalidated_model=true); shift ;;
+      # Pass an Ansible extra-var straight through. Extra vars outrank the profile's own
+      # include_vars, so this is how you deploy the same profile at a different setting without
+      # editing the file: `-e max_model_len=262144` for a token-ceiling search, or the fallbacks
+      # several profiles document in their own comments (`-e tensor_parallel_size=4`,
+      # `-e vllm_image_override=...`). Repeatable. The deployed value then differs from the file,
+      # so record which one was live, and re-run without -e before you tear down.
+      -e|--set)       [ $# -ge 2 ] || die "$1 needs a key=value argument."
+                      case "$2" in *=*) ;; *) die "$1 expects key=value, got '$2'." ;; esac
+                      ans_args+=(-e "$2"); shift 2 ;;
       --shutdown-at)  sd_at="$2"; shift 2 ;;
       --shutdown-tz)  sd_tz="$2"; shift 2 ;;
       --no-shutdown)  sd_enabled="false"; shift ;;
@@ -146,6 +155,19 @@ cmd_up() {
   local want_plan=""
   if [ -n "$swap_profile" ]; then want_plan="$(profile_plan "$swap_file" swap_plan)"
   else want_plan="$(profile_plan "ansible/models/${model}.yml" min_plan)"; fi
+
+  # A profile with no parseable min_plan produces an empty want_plan, which silently disables both
+  # guards below: it inherits whatever box is live (no mismatch check) or falls through to the
+  # OpenTofu default, and the mistake only surfaces after Ansible has run. kimi-k3 is the live
+  # example — no UpCloud plan satisfies its 280 GB per-GPU floor, so it deliberately has no
+  # min_plan, and it is precisely the profile that must not latch onto a running server.
+  # Refuse unless the operator names the tier themselves.
+  if [ -z "$plan" ] && [ -z "$want_plan" ] && [ -z "$swap_profile" ]; then
+    die "profile '${model}' declares no usable min_plan, so bin/spin cannot choose a tier for it.
+    Either the profile is missing the field, or no plan fits it (kimi-k3 needs ~280 GB per GPU;
+    nothing sold here has that). Pass --plan <id> to name the tier explicitly and accept the cost.
+    Plans and prices: tests/plans.txt"
+  fi
 
   # Guard against an unintended resize: with no --plan, a re-run on an EXISTING server would plan
   # the config default against the live box (auto-approve!). Inherit the current plan from state.
@@ -380,4 +402,92 @@ cmd_swap_profiles() {
     grep -E '^\s*-\s' "$f" | sed -E 's/^\s*-\s*/      - /'
   done
   [ -n "$found" ] || warn "no presets found in $dir."
+}
+
+# Fill the persistent weights disk from a cheap CPU box, before any GPU exists.
+#
+# The arithmetic: a download is billed at whatever compute holds the disk, and nothing about it is
+# GPU work. 354 GB at ~126 MB/s is ~47 min: 5.17 EUR on 4x RTX PRO 6000 (6.60/h) against 0.035 EUR
+# on 2xCPU-4GB (0.0446/h) — about 150x. The GPU box then starts warm and spends its expensive
+# minutes on inference. This also pulls each profile's container image (9-14 GB) onto the same
+# disk, because Docker's data-root lives there too.
+#
+# An UpCloud storage device attaches to one server at a time, so this is mutually exclusive with a
+# GPU server by construction. Refuse up front rather than letting tofu fail halfway.
+cmd_prefetch() {
+  require_token
+  local models=() keep=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --keep) keep=1; shift ;;            # leave the box up (debugging); it still costs ~0.045/h
+      -*) die "prefetch: unknown option '$1'" ;;
+      *) models+=("$1"); shift ;;
+    esac
+  done
+  [ "${#models[@]}" -gt 0 ] || die "prefetch: name at least one profile, e.g.
+    bin/spin prefetch qwen38-nvfp4 qwen38-flash-next
+  Profiles: ls ansible/models/"
+
+  local m
+  for m in "${models[@]}"; do
+    [ -f "ansible/models/${m}.yml" ] || die "unknown model profile '$m' (see ansible/models/)."
+  done
+
+  # The weights disk cannot be attached to two servers. Fail with the reason, not a tofu error.
+  local gpu_srv; gpu_srv="$(tofu_out server_uuid 2>/dev/null || true)"
+  if printf '%s' "$gpu_srv" | grep -qE '^[0-9a-fA-F-]{36}$'; then
+    die "a GPU server still exists ($gpu_srv) and holds the weights disk.
+    An UpCloud disk attaches to one server at a time. Run 'bin/spin down --keep-disk' first
+    (keeps the cache), then prefetch, then bring the GPU box back up."
+  fi
+
+  check_tfvars
+  local wid; wid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
+  printf '%s' "$wid" | grep -qE '^[0-9a-fA-F-]{36}$' \
+    || die "no persistent weights disk in state — run 'bin/spin persistent-init' first."
+
+  build_operator_tf_args
+  assert_operator_reachable
+
+  local tf_args=(${OPERATOR_TF_ARGS[@]+"${OPERATOR_TF_ARGS[@]}"})
+  # Reuse the ephemeral stack's SSH keys. `ssh_public_keys` is a multi-line HCL list, so
+  # a line-oriented extraction returns a bare "[" and tofu dies with "Missing expression". Collapse
+  # the whole bracketed block onto one line instead. Written to a tfvars file rather than passed as
+  # -var because the value contains spaces and quotes.
+  local keys
+  keys="$(awk '/^ssh_public_keys[[:space:]]*=/{f=1} f{printf "%s ", $0} f&&/\]/{exit}' \
+          "$EPHEMERAL_DIR/terraform.tfvars" 2>/dev/null | sed 's/  */ /g')"
+  if [ -n "$keys" ]; then
+    printf '%s\n' "$keys" > "$PREFETCH_DIR/terraform.tfvars"
+  else
+    warn "no ssh_public_keys found in $EPHEMERAL_DIR/terraform.tfvars — the prefetch box will be unreachable."
+  fi
+
+  log "Provisioning the prefetch box (${#models[@]} profile(s): ${models[*]})..."
+  tofu_init "$PREFETCH_DIR"
+  "$TOFU" -chdir="$PREFETCH_DIR" apply -auto-approve ${tf_args[@]+"${tf_args[@]}"} \
+    || die "tofu apply failed in $PREFETCH_DIR — nothing was fetched."
+
+  local host; host="$(tofu_output "$PREFETCH_DIR" ssh_host)"
+  [ -n "$host" ] || die "prefetch stack has no ssh_host output; check: $TOFU -chdir=$PREFETCH_DIR state list"
+  wait_ssh "$host"
+
+  printf '[prefetch]\n%s ansible_user=root\n' "$host" > "$INVENTORY"
+  local json; json="$(printf '%s\n' "${models[@]}" | jq -R . | jq -sc '{prefetch_models: .}')"
+  local rc=0
+  ansible-playbook -i "$INVENTORY" ansible/prefetch.yml -e "$json" || rc=$?
+  rm -f "$INVENTORY"
+
+  if [ -n "$keep" ]; then
+    warn "--keep: the prefetch box is still running at ~EUR 0.045/h. Destroy it with:
+    $TOFU -chdir=$PREFETCH_DIR destroy -auto-approve"
+  else
+    log "Destroying the prefetch box..."
+    "$TOFU" -chdir="$PREFETCH_DIR" destroy -auto-approve ${tf_args[@]+"${tf_args[@]}"} \
+      || warn "prefetch teardown FAILED — the box is still billing. Destroy it by hand:
+    $TOFU -chdir=$PREFETCH_DIR destroy"
+  fi
+
+  [ "$rc" -eq 0 ] || die "the prefetch play failed (exit $rc) — see the output above. The disk keeps whatever did download."
+  log "Prefetch done. The weights disk is warm; 'bin/spin up --model <one of them>' now skips the pull."
 }

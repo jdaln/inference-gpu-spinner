@@ -7,6 +7,7 @@ cd "$ROOT"
 
 PERSIST_DIR="terraform/persistent"
 EPHEMERAL_DIR="terraform/providers/upcloud"
+PREFETCH_DIR="terraform/prefetch"
 INVENTORY="ansible/inventory/hosts.ini"
 # Must match ansible's compose_dir (group_vars/all.yml); the compose project name (and thus
 # container names like <project>-vllm-1) derives from this directory's basename.
@@ -56,6 +57,9 @@ Usage: bin/spin <command> [options]
                          --swap-profile NAME serves several models on one box via llama-swap (one in
                          VRAM at a time); presets live in ansible/swap-profiles/ (see swap-profiles).
                          --allow-unvalidated lets a requires_review profile deploy (needs a big --plan).
+                         -e k=v passes an Ansible extra-var through (repeatable). Extra vars beat
+                         the profile, so this deploys the same model at a different setting without
+                         editing it: -e max_model_len=262144, -e vllm_image_override=<tag>.
                          Safety: auto power-off defaults ON at 21:00 Europe/Zurich (UpCloud only,
                          where a stopped server isn't billed). --no-shutdown opts out.
   down [--keep-disk]     Destroy the GPU server (the cost saver). By DEFAULT it also decommissions a
@@ -69,6 +73,12 @@ Usage: bin/spin <command> [options]
   ssh [args...]          SSH into the GPU box.
   plan                   tofu plan for the ephemeral stack.
   swap-profiles          List the multi-model swap presets (ansible/swap-profiles/).
+  prefetch <profile>...  Download those profiles' weights AND container images onto the persistent
+                         disk using a cheap CPU box (~EUR 0.045/h), then destroy it. A download is
+                         billed at whatever compute holds the disk and is not GPU work: ~354 GB
+                         costs ~EUR 5 on 4x RTX PRO 6000 and ~EUR 0.04 here. Run it before
+                         `up` so the GPU box starts warm. Requires no GPU server to exist (a disk
+                         attaches to one server at a time).
   validate               Capture exact validation evidence (context/KV/VRAM/test gen) for docs/validation.md.
   soak [--rounds N] [--concurrency M] [--context T] [--model NAME]
                          Answer-quality soak: temp-0 factual battery, fabrication traps, then a
@@ -79,6 +89,16 @@ Usage: bin/spin <command> [options]
                          are reported but do not (admission control, not correctness). T is clamped
                          to the model's max_model_len. Prompts cross the public endpoint: ~2.5 MB
                          per round at 32768, ~10 MB at 131072.
+  ceiling [--model NAME] [--start N] [--max N] [--step K] [--keep-going]
+                         Find the longest SINGLE request the deployed model survives, so
+                         max_model_len comes from a measurement rather than the recipe. Probes one
+                         request at a time, ascending (a crash costs a full engine reload, so
+                         bisecting is the expensive way), and judges each result on the container's
+                         restart counter — a crashed engine is restarted by compose and `soak`
+                         would file it as a mere rejection. Nothing can exceed the DEPLOYED
+                         max_model_len, so redeploy high first:
+                           bin/spin up --model M --plan <plan in state> -e max_model_len=<native>
+                         Report the pass/fail boundary in prompt_tokens, never the requested value.
   help                   This message.
 
 Env (see .env.example): UPCLOUD_TOKEN, ACME_EMAIL, VLLM_API_KEY, [OPERATOR_IP|OPERATOR_CIDRS],
@@ -99,9 +119,11 @@ case "${1:-help}" in
   logs)            shift; cmd_logs "$@" ;;
   ssh)             shift; cmd_ssh "$@" ;;
   plan)            shift; cmd_plan "$@" ;;
+  prefetch)        shift; cmd_prefetch "$@" ;;
   swap-profiles)   shift; cmd_swap_profiles "$@" ;;
   validate)        shift; cmd_validate "$@" ;;
   soak)            shift; cmd_soak "$@" ;;
+  ceiling)         shift; cmd_ceiling "$@" ;;
   help|-h|--help)  usage ;;
   *) usage; exit 1 ;;
 esac

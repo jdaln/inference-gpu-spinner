@@ -64,8 +64,11 @@ extra_vllm_args:
   # DSpark: the draft module is fused into this same checkpoint, so there is no separate draft model.
   - "--speculative-config"
   - '{"method":"dspark","model":"deepseek-ai/DeepSeek-V4-Flash-Vision-Exp","num_speculative_tokens":3,"draft_sample_method":"probabilistic","enable_adaptive_verification":true}'
-min_plan: "GPU-48xCPU-960GB-4xB200"
+min_plan: "GPU-96xCPU-960GB-4xB200"
 min_vram_gb: 90    # per-GPU floor: ~202 GB budget across TP=4, plus KV headroom at 32K
+min_disk_gb: 196   # 156 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 156   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0
 unsupported_compute_capabilities: [12.0]
 unsupported_reason: >-

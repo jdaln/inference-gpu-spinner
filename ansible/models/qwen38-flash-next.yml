@@ -64,6 +64,15 @@ max_model_len: 262144
 gpu_memory_utilization: 0.85
 dtype: "auto"
 enable_lora: false
+# CAP_SYS_PTRACE is not optional for this profile. VLLM_PLE_CPU_OFFLOAD spawns a PLE offload
+# worker that hands CUDA tensors to the TP workers over CUDA IPC, and that calls pidfd_getfd(2).
+# Docker's default seccomp profile gates that syscall behind CAP_SYS_PTRACE and returns EPERM
+# without it, so engine init fails at worker registration with
+#   RuntimeError: pidfd_getfd: Operation not permitted   (torch reductions.rebuild_cuda_tensor)
+# after the checkpoint has already loaded — about 8 minutes into a 4-GPU start. Measured live
+# 2026-09-20 on 4x RTX PRO 6000. Narrower than seccomp=unconfined or pid=host.
+cap_add:
+  - SYS_PTRACE
 extra_env:
   VLLM_PLE_CPU_OFFLOAD: 1
 extra_vllm_args:
@@ -79,6 +88,16 @@ extra_vllm_args:
   - "--enable-auto-tool-choice"
 min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
 min_vram_gb: 76                  # per-GPU floor: ~43 GiB per rank at TP=4; keeps both 4xH100 and 4xRTXPRO6000
-validated: false                 # newly added — no live run on this account yet
+min_disk_gb: 300   # 173 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+                   # Rounded up to the 300 GB floor this profile's own notes give.
+weights_gb: 173   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+validated: true    # live run 2026-09-20 on 4x RTX PRO 6000 (spot) — see docs/validation.md
+# MEASURED 2026-09-20 on GPU-SPOT-64xCPU-320GB-4xRTXPRO6000 (driver 595.58.03, cc 12.0):
+#   KV pool 3,640,845 tokens · 13.89x concurrency at 262,144 · ~85,340/97,887 MiB per card
+#   TRITON Fp8 MoE · model load 32.72 GiB/rank in ~29 s · engine init 110.7 s
+#   soak 3x20 @32768: factual 6/6, 60/60 needles, 0 wrong/rejected/timed-out, p50 20.8 s
+#   ceiling: 65,429 / 130,803 / 259,512 prompt_tokens all PASS — 262144 is measured, not the recipe.
+# NCCL over PCIe came up first try on this 4-GPU plan; NCCL_P2P_DISABLE was NOT needed.                 # newly added — no live run on this account yet
 untested_compute_capabilities: [12.0]   # RTX PRO 6000 is now the default lane; nothing measured there
 health_wait_retries: 200         # x10s = 33 min — ~186 GB download, TP=4 init, N-gram table offload

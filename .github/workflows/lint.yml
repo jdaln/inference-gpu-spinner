@@ -38,6 +38,7 @@ jobs:
         run: |
           ansible-playbook ansible/site.yml --syntax-check -e vllm_model=qwen36 -e sslip_host=example
           ansible-playbook ansible/site.yml --syntax-check -e vllm_model=qwen36 -e sslip_host=example -e multi_model_enabled=true
+          ansible-playbook ansible/prefetch.yml --syntax-check -i ansible/inventory/placeholder.ini
       - name: the inventory directory actually parses
         # `.ini` is in Ansible's default ignore list, so a directory inventory of .ini files
         # resolves to nothing and every play then matches no hosts while exiting 0. Only
@@ -72,6 +73,18 @@ jobs:
           for f in ansible/models/*.yml; do check "$f" min_plan; done
           for f in ansible/swap-profiles/*.yml; do check "$f" swap_plan; done
           exit $rc
+
+      - name: tests/plans.txt still matches UpCloud's live plan listing
+        # The check above only proves the repo agrees with itself. This one asks the provider.
+        # Skips cleanly when the secret is absent, so forks and PRs from forks still pass.
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_TOKEN }}
+        run: tests/check-plans.sh
+
+      - name: llama-swap refuses presets it cannot serve faithfully
+        # The backend command carries no per-model env and no plugin mounts, so such a profile would
+        # start and serve silently-wrong output. Proves the refusal, not just the happy path.
+        run: ansible-playbook tests/swap-refusals.yml
 
       - name: every swap preset resolves + renders (llama-swap)
         run: |

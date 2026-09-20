@@ -45,6 +45,10 @@ extra_vllm_args:
   - "kimi_k3"
   - "--enable-auto-tool-choice"
 min_vram_gb: 280               # per-GPU floor: GB300/B300 class. A B200 (179 GB) is refused.
+min_disk_gb: 1700   # 1454 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+                   # Rounded up to the 1700 GB floor this profile's own notes give.
+weights_gb: 1454   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0
 min_driver_major: 580          # the kimi-k3 image is a cu130 build and needs an r580+ host driver
 validated: false               # newly added — no live run on this account yet

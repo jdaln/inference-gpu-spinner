@@ -26,6 +26,19 @@
       untested_compute_capabilities: "{{ _profile.untested_compute_capabilities | default([]) }}"
       validated: "{{ _profile.validated | default(true) }}"
       tensor_parallel_size: "{{ _profile.tensor_parallel_size | default(1) }}"
+      dtype: "{{ _profile.dtype | default('auto') }}"
+      requires_review: "{{ _profile.requires_review | default(false) }}"
+      health_wait_retries: "{{ _profile.health_wait_retries | default(90) }}"
+      # Carried so the role can REFUSE them: the llama-swap backend is a bare `docker run` with no
+      # per-model environment and no plugin mounts (see llama-swap.yaml.j2), so a profile relying on
+      # either would start and serve WRONG output rather than fail. glm53-flash-nvfp4 is the live
+      # example — without VLLM_GLM53_MOE_INPUT_SCALE every expert output is multiplied by zero.
+      extra_env: "{{ _profile.extra_env | default({}) }}"
+      vllm_plugins: "{{ _profile.vllm_plugins | default([]) }}"
+      # NOT carried, by design: `served_name`. In swap mode the client-facing name is the profile
+      # FILENAME (llama-swap.yaml.j2 passes `--served-model-name <m.name>`), because that is the key
+      # a preset lists and the string a client puts in the OpenAI `model` field. So `qwen36` serves
+      # as "qwen36" here and as "qwen3.6-27b-fp8" in single-model mode. /v1/models is authoritative.
   loop: "{{ swap_profiles | default([]) }}"
   loop_control:
     label: "{{ item }}"

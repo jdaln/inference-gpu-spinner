@@ -59,6 +59,12 @@
 #     decompressed to FP16 before the GEMM). vllm-project/vllm#52225 reports Xid 13 warp errors on
 #     RTX PRO 6000 under sustained multi-hour load with Marlin MoE, which a short validate cannot
 #     surface — watch for it during long soaks and record the run length actually exercised.
+#     STATUS 2026-09-20: NOT MEASURED, AND DELIBERATELY SO. Reaching that regime needs 45+ minutes
+#     of continuous graded load at 6.60 EUR/h list (4.95 spot), roughly 4 EUR, and the repo owner
+#     declined the spend. Both the original validation and the 2026-09-20 re-run exercised MINUTES,
+#     not hours. This is a decision, not a TODO. For multi-hour production traffic on this profile
+#     treat Xid 13 as an unquantified risk and watch the container restart counter:
+#       bin/spin ssh "docker inspect -f '{{.RestartCount}}' gpu-spinner-vllm-1"
 #   no --enforce-eager              : CUDA graphs capture normally with this overlay, and eager was
 #                                     measured 5-6x slower on this hardware. Do not add it.
 # fp8 KV is supported by the overlay kernel (bf16 also works, at roughly half the KV capacity).
@@ -165,6 +171,10 @@ extra_vllm_args:
   - "--enable-auto-tool-choice"
 min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
 min_vram_gb: 90    # per-GPU floor: RTX PRO 6000 reports 95, B200 179; keeps H100 (79) out
+min_disk_gb: 250   # 181 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+                   # Rounded up to the 250 GB floor this profile's own notes give.
+weights_gb: 181   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0   # Blackwell; the overlay kernel covers sm_120 and sm_121
 min_driver_major: 580          # the image is a cu130 build
 validated: true    # live run 2026-09-20 — see docs/validation.md

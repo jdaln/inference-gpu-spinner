@@ -28,5 +28,8 @@ extra_vllm_args:
   - "fp8"
 min_plan: "GPU-12xCPU-240GB-1xH100"
 min_vram_gb: 76
+min_disk_gb: 75   # 35 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 35   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 untested_compute_capabilities: [12.0]   # runs on RTX PRO 6000, not yet measured there
 health_wait_retries: 120   # x10s = 20 min — 37.5 GB download + MoE load took ~15 min cold

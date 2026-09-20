@@ -15,60 +15,10 @@
       multi_model_enabled=true but no models resolved. Use --swap-profile <name>
       (see: bin/spin swap-profiles), or pass swap_profiles=[<profile names>] / a swap_models list.
 
-- name: Validate each swap_models entry has the required keys
-  ansible.builtin.assert:
-    that:
-      - item.name is defined and (item.name | string | length) > 0
-      - item.model_repo is defined and (item.model_repo | string | length) > 0
-      - item.max_model_len is defined
-    fail_msg: "swap_models entry is missing name/model_repo/max_model_len: {{ item }}"
-  loop: "{{ swap_models | default([]) }}"
-  loop_control:
-    label: "{{ item.name | default('<no name>') }}"
-
-# A preset is a menu of profiles, and llama-swap starts each one on this GPU. Single-model mode
-# preflights its one profile in the vllm role; without the same check here a preset could include a
-# model this GPU cannot serve, and the failure would only surface on the first request to it.
-- name: Preflight — every model in the preset can run on this GPU
-  ansible.builtin.assert:
-    that:
-      - (gpu_total_vram_gb is not defined) or
-        ((gpu_total_vram_gb | int) >= (item.min_vram_gb | default(0) | int))
-      - (gpu_compute_cap is not defined) or
-        ((gpu_compute_cap | float) >= (item.min_compute_capability | default(0) | float))
-      - (gpu_compute_cap is not defined) or
-        ((gpu_compute_cap | float) not in
-         (item.unsupported_compute_capabilities | default([]) | map('float') | list))
-      - (gpu_count is not defined) or
-        ((gpu_count | int) >= (item.tensor_parallel_size | default(1) | int))
-    fail_msg: >-
-      Swap preset entry '{{ item.name }}' cannot run on this server
-      ({{ gpu_count | default('?') }}x {{ gpu_name | default('?') }},
-      {{ gpu_total_vram_gb | default('?') }} GB per GPU, compute capability
-      {{ gpu_compute_cap | default('?') }}). It needs >= {{ item.min_vram_gb | default(0) }} GB,
-      compute capability >= {{ item.min_compute_capability | default(0) }}
-      (excluding {{ item.unsupported_compute_capabilities | default([]) }}) and
-      {{ item.tensor_parallel_size | default(1) }} GPU(s). Pick a preset that matches the plan
-      (bin/spin swap-profiles), or drop that model from the preset.
-  loop: "{{ swap_models | default([]) }}"
-  loop_control:
-    label: "{{ item.name | default('<no name>') }}"
-  when: not (allow_unvalidated_model | default(false) | bool)
-
-- name: Warn about preset entries with no live run on this GPU yet
-  ansible.builtin.debug:
-    msg: >-
-      UNTESTED: '{{ item.name }}' has no recorded run on {{ gpu_name | default('this GPU') }}
-      (compute capability {{ gpu_compute_cap | default('?') }}). It should serve; the numbers in
-      docs/validation.md are from other hardware.
-  loop: "{{ swap_models | default([]) }}"
-  loop_control:
-    label: "{{ item.name | default('<no name>') }}"
-  when:
-    - gpu_compute_cap is defined
-    - (not (item.validated | default(true) | bool)) or
-      ((gpu_compute_cap | float) in
-       (item.untested_compute_capabilities | default([]) | map('float') | list))
+# Per-entry preflights (hardware gates, shapes llama-swap cannot express, requires_review).
+# In their own file so tests/swap-refusals.yml can import and prove them without a GPU.
+- name: Preflight every entry in the preset
+  ansible.builtin.import_tasks: refusals.yml
 
 - name: Download the llama-swap release tarball (checksum-verified)
   ansible.builtin.get_url:

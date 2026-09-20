@@ -119,6 +119,81 @@
       Hugging Face, then re-run. (All current profiles are ungated; check a repo's gate with
       `curl https://huggingface.co/api/models/<repo> | jq .gated`.)
 
+# Disk space is the common failure that used to have no machine check: profiles stated their
+# download size in a comment that nothing read, so an under-sized WEIGHTS_SIZE_GB surfaced as
+# "No space left on device" 20 to 120 minutes into a pull, on a GPU billed by the hour. `weights_gb`
+# in each profile is that figure, measured from the Hugging Face file listing (sum of
+# `.siblings[].size` — `usedStorage` counts every revision and reads several times too high).
+# Free space is the thing to check, since /data also carries Docker's data-root and any previously
+# cached model. Measured here rather than reused from the docker role so `--tags vllm` still checks.
+# Free space plus what this model already occupies. A cache filled ahead of time (bin/spin
+# prefetch) means the pull is already paid for, so comparing free space alone to min_disk_gb
+# refuses a deploy with nothing left to download — glm53-flash-nvfp4 asks for 250 GB and its
+# weights are 181 GB of that.
+# Measure with `du -L`: it follows the symlinks into huggingface_hub's shared blob store and dedups
+# by inode, giving 22G/182G/18G against an expected 22/181/18 (2026-09-20). Plain `du` reads the
+# symlinks themselves (1 GB for a 22 GB model) and `find -L` double-counts blobs/ and snapshots/
+# (43 GB for that same model). ansible/prefetch.yml relies on the same measurement.
+- name: Measure free space and this model's existing cache
+  ansible.builtin.shell: |
+    set -o pipefail
+    df -BG --output=avail {{ data_root | quote }} | tail -1 | tr -dc '0-9'
+    printf ' '
+    du -sBG -L {{ (hf_cache_dir ~ '/hub/models--' ~ (model_repo | replace('/', '--'))) | quote }} \
+      2>/dev/null | cut -f1 | tr -dc '0-9' || printf 0
+  args:
+    executable: /bin/bash
+  register: data_space
+  changed_when: false
+  failed_when: (data_space.stdout | trim | length) == 0
+
+# This checks what a deploy needs — the weights still missing, plus room for the image — which is a
+# different question from `min_disk_gb`. That key is sizing advice for `bin/spin persistent-init`:
+# how big to make the disk for a cold start, with the container image, Docker's data-root and room
+# for a second model.
+#
+# Measured live 2026-09-20: qwen38-flash-next has min_disk_gb 300, its 173 GB of weights were
+# already prefetched, and 72 GB was free — enough for its ~30 GB image several times over. The
+# earlier form of this check (free + cached >= min_disk_gb) refused it, because the profile's 300
+# is a floor chosen for a disk that also has to hold other things. Requiring cold-start headroom
+# on a warm cache blocks exactly the workflow `bin/spin prefetch` exists to enable.
+- name: Preflight — the weights disk has room for this profile
+  vars:
+    _free: "{{ (data_space.stdout.split() | first) | int }}"
+    _cached: "{{ (data_space.stdout.split() | last) | int }}"
+    # 60 GB covers the largest image here unpacked (~35 GB) plus working room. Nothing in this
+    # repo needs more at deploy time once the weights are down.
+    _still_to_pull: "{{ [0, (weights_gb | default(0) | int) - (_cached | int)] | max }}"
+    _need_free: "{{ (_still_to_pull | int) + 60 }}"
+  ansible.builtin.assert:
+    that:
+      - (weights_gb is not defined) or
+        (allow_unvalidated_model | default(false) | bool) or
+        ((_free | int) >= (_need_free | int))
+    fail_msg: >-
+      Model '{{ vllm_model }}' needs {{ _need_free }} GB free on {{ data_root }}
+      ({{ _still_to_pull }} GB of weights still to pull, plus 60 GB for the container image and
+      working room) but only {{ _free }} GB is free. The download would die part-way with
+      "No space left on device" on a GPU you are paying for by the hour.
+      Either pull the weights ahead of time on a cheap box (`bin/spin prefetch {{ vllm_model }}`),
+      grow the disk (set WEIGHTS_SIZE_GB={{ (min_disk_gb | default(0) | int) + 50 }} and re-run
+      `bin/spin persistent-init` — UpCloud can grow a disk but never shrink it), or free space:
+      `bin/spin ssh 'du -sh -L {{ data_root }}/hf-cache/hub/models--*'` then rm -rf one you no
+      longer need.
+    success_msg: >-
+      {{ _free }} GB free on {{ data_root }}; '{{ vllm_model }}' needs {{ _need_free }} GB
+      ({{ _cached }} of {{ weights_gb | default('?') }} GB of weights already cached)
+
+- name: Warn when the weights disk has little headroom left
+  ansible.builtin.debug:
+    msg: >-
+      Only {{ (data_space.stdout.split() | first) | int }} GB free on {{ data_root }}. The deploy
+      fits, but there is little room for another model's weights or a second container image —
+      check `du -sh {{ data_root }}/hf-cache/hub/models--*` before the next deploy.
+  when:
+    - min_disk_gb is defined
+    - ((data_space.stdout.split() | first) | int) < 60
+
 - name: Require the sslip hostname (bin/spin passes it from the tofu output)
   ansible.builtin.assert:
     that:

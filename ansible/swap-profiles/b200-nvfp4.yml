@@ -13,4 +13,4 @@ swap_profiles:
 # swap_idle_ttl: 1800   # optional override (seconds a backend stays warm after its last request)
 
 # Plan bin/spin deploys for this preset when --plan is not given (see tests/plans.txt).
-swap_plan: "GPU-12xCPU-240GB-1xB200"
+swap_plan: "GPU-24xCPU-240GB-1xB200"

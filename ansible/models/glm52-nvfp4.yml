@@ -1,6 +1,6 @@
 ---
 # GLM-5.2 (Z.ai, 753B total / ~40B active MoE, text-only, 1M native ctx) in NVFP4 — the runnable
-# multi-GPU path on this account: 4x B200 (GPU-48xCPU-960GB-4xB200, TP=4). NVFP4 weights ~377 GB
+# multi-GPU path on this account: 4x B200 (GPU-96xCPU-960GB-4xB200, TP=4). NVFP4 weights ~433 GB (measured from the HF file listing 2026-09-20)
 # fit 4x179 GB VRAM with headroom (the FP8 build ~756 GB needs 8x B200 — see glm52.yml).
 # Quant auto-detected (no --quantization). MoE NVFP4 backend: vLLM auto-selects CUTLASS — do NOT
 # set VLLM_USE_FLASHINFER_MOE_FP4 (raises "no FlashInfer NVFP4 MoE backend..." on this image).
@@ -24,8 +24,11 @@ extra_vllm_args:
   - "--enable-auto-tool-choice"
   - "--kv-cache-dtype"
   - "fp8_e4m3"
-min_plan: "GPU-48xCPU-960GB-4xB200"
+min_plan: "GPU-96xCPU-960GB-4xB200"
 min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB after floor-div)
+min_disk_gb: 473   # 433 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 433   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0     # NVFP4 needs Blackwell
 unsupported_compute_capabilities: [12.0]
 unsupported_reason: >-
@@ -33,5 +36,5 @@ unsupported_reason: >-
   RTX Blackwell (cc 12.0) — vllm-project/vllm#55757, where a short-prompt smoke test passes and
   realistic prompts fail. That outlives the NVFP4 MoE GEMM fault this reason used to cite, which is
   reported fixed on cu130. 8x RTX PRO 6000 would also be 768 GB of PCIe-attached VRAM with no
-  NVLink, a poor fit for TP=4/8 on a 377 GB checkpoint
+  NVLink, a poor fit for TP=4/8 on a 433 GB checkpoint
 health_wait_retries: 150   # x10s = 25 min — measured ~18 min cold start (447 GB load + 457 s engine init)

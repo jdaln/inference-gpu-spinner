@@ -1,9 +1,24 @@
 ---
-# Gemma 4 26B-A4B in NVFP4 — Blackwell (B200) ONLY. Official NVIDIA ModelOpt checkpoint (~14 GB).
-# Quant auto-detected (do NOT pass --quantization). MoE NVFP4 backend: let vLLM auto-select (CUTLASS). Do NOT set VLLM_USE_FLASHINFER_MOE_FP4=1 — on this
-# image it raises "no FlashInfer NVFP4 MoE backend supports the configuration" (measured live 2026-07-04).
-# B200 (NVFP4 will not run on L40S/H100). Live-validated on B200 2026-07-05 (262144, KV 10.64M tok,
-# 40.59x, 165.9/183 GiB; soak 6/6; CUTLASS NVFP4-MoE path confirmed).
+# Gemma 4 26B-A4B in NVFP4 — Blackwell only: B200 (cc 10.0) or RTX PRO 6000 (cc 12.0). Official
+# NVIDIA ModelOpt checkpoint (~14 GB). Quantization is auto-detected (do not pass --quantization).
+# Let vLLM pick the NVFP4 MoE backend: VLLM_USE_FLASHINFER_MOE_FP4=1 raises "no FlashInfer NVFP4 MoE
+# backend supports the configuration" on this image (measured live 2026-07-04).
+#
+# VALIDATED on both lanes.
+#   B200, 2026-07-05: 262144 ctx, KV 10.64M tokens, 40.59x concurrency, 165.9/183 GiB, soak 6/6,
+#     CUTLASS NVFP4-MoE path confirmed.
+#   RTX PRO 6000, 2026-09-20: GPU-SPOT-16xCPU-80GB-1xRTXPRO6000, driver 595.58.03, on the same
+#     cu129 pin. vLLM chose the 'VLLM_CUTLASS' NvFp4 MoE path and answered correctly throughout.
+#     KV pool 4,822,910 tokens, 18.40x at 262,144, 88,921/97,887 MiB. soak 3x20 @32768: factual
+#     6/6, traps 2/2 declined, 60/60 needles, 0 wrong, p50 14.1 s. The graded long-context load is
+#     what clears it — vllm-project/vllm#55757 is the failure shape where short prompts pass and
+#     realistic lengths break. No cu130 image was needed.
+#
+# Until that run this profile refused cc 12.0, on the grounds that NVFP4 MoE takes a CUTLASS grouped
+# block-scaled GEMM returning invalid output on cu129. Both upstream fixes had already landed:
+# flashinfer-ai/flashinfer#2708 closed 2026-04-20 and vllm-project/vllm#54189 closed 2026-08-30,
+# before this image was built on 2026-06-13. Check a ticket before trusting a gate.
+# Evidence: docs/validation-runs/2026-09-20-rtx-campaign.md
 model_repo: "nvidia/Gemma-4-26B-A4B-NVFP4"
 served_name: "gemma4-26b-a4b-nvfp4"
 tensor_parallel_size: 1
@@ -22,13 +37,10 @@ extra_vllm_args:
   - "gemma4"
   - "--kv-cache-dtype"
   - "fp8"
-min_plan: "GPU-12xCPU-240GB-1xB200"
+min_plan: "GPU-16xCPU-80GB-1xRTXPRO6000"   # 1.65/h list, 1.24 spot; the 1xB200 lane (4.50/h)
+                   # also serves this profile.
 min_vram_gb: 40                  # real weight+KV floor; the capability gates below pin the family
+min_disk_gb: 58   # 18 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 18   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0     # NVFP4 needs Blackwell — no L4/L40S/H100
-unsupported_compute_capabilities: [12.0]
-unsupported_reason: >-
-  NVFP4 MoE on RTX Blackwell (cc 12.0) goes through the CUTLASS grouped block-scaled GEMM, which
-  returns invalid output on the cu129 build this profile pins. Re-test this: the fault is reported
-  fixed on cu130 (flashinfer-ai/flashinfer#2708, now in vLLM's FlashInfer pin), and a separate
-  silent fault, vllm-project/vllm#54189, accounted for much of the same symptom. A cu130 image
-  needs an r580+ host driver — check what the deploy reports as gpu_driver_major first

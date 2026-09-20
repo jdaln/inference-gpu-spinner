@@ -51,6 +51,18 @@ extra_vllm_args:
   - "fp8"
 min_plan: "GPU-8xCPU-64GB-1xL40S"
 min_vram_gb: 40                  # ~31 GB weights + KV; an L4's 24 GB cannot hold it
-validated: false                 # newly added — no live run on this account yet
+min_disk_gb: 69   # 29 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 29   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+validated: true    # live run 2026-09-20 on 1x RTX PRO 6000 (spot) — see docs/validation.md
+# MEASURED 2026-09-20 on GPU-SPOT-16xCPU-80GB-1xRTXPRO6000 (driver 595.58.03, cc 12.0):
+#   KV pool 1,743,257 tokens · 13.30x concurrency at 131,072 · 88,147/97,887 MiB
+#   FLASHINFER attention · model load 27.57 GiB in 72.8 s · engine init 41.5 s
+#   soak 3x20 @32768: factual 6/6, traps 2/2 declined, 60/60 needles, 0 wrong/rejected/timed-out
+#
+# max_model_len STAYS AT 131072. This card has room for the native 262144 (the KV pool would still
+# give ~6.6x concurrency), but min_plan is an L40S with 46 GiB, where the pool is far smaller and
+# 131072 is the value that was sized for it. Raising it from a 96 GiB measurement would set the
+# default lane's context from hardware the default lane never runs on. Measure on an L40S first.                 # newly added — no live run on this account yet
 untested_compute_capabilities: [12.0]   # also fits RTX PRO 6000 / H100, neither measured
 health_wait_retries: 120         # x10s = 20 min — ~31 GB download plus a 64-layer hybrid load

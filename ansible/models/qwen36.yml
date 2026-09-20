@@ -35,3 +35,6 @@ min_plan: "GPU-8xCPU-64GB-1xL40S"
 untested_compute_capabilities: [12.0]   # also fits RTX PRO 6000 / H100; only L40S is measured
 # Preflight floor (GB): an L40S reports ~44 GB. 40 blocks an accidental L4 run (which would OOM).
 min_vram_gb: 40
+min_disk_gb: 69   # 29 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 29   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)

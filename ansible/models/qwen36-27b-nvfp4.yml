@@ -22,7 +22,10 @@ extra_vllm_args:
   - "--enforce-eager"
   - "--kv-cache-dtype"
   - "fp8"
-min_plan: "GPU-12xCPU-240GB-1xB200"   # the validated tier; 1xRTXPRO6000 also passes, untested
+min_plan: "GPU-24xCPU-240GB-1xB200"   # the validated tier; 1xRTXPRO6000 also passes, untested
 min_vram_gb: 40                  # ~21 GB weights + KV; keeps an L4/L40S-sized card out
+min_disk_gb: 60   # 20 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 20   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0     # Blackwell or newer: B200 (cc 10.0) and RTX PRO 6000 (cc 12.0)
 untested_compute_capabilities: [12.0]   # dense NVFP4 should run on RTX PRO 6000; not yet measured

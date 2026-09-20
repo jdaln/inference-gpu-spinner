@@ -18,7 +18,7 @@
 # TP=8 is cheaper than the 4x B200 lane and closer to the published run. That lane is still one
 # command away, since extra vars outrank a profile:
 #   bin/spin up --model k2-horizon-375b --allow-unvalidated \
-#     --plan GPU-48xCPU-960GB-4xB200 -e tensor_parallel_size=4
+#     --plan GPU-96xCPU-960GB-4xB200 -e tensor_parallel_size=4
 #
 # NO NVLINK on the RTX PRO 6000 plans: TP=8 over PCIe across eight cards is the heaviest
 # communication pattern in this repo, and unmeasured. If engine init hangs inside NCCL rather than
@@ -54,6 +54,10 @@ extra_vllm_args:
   - "--enable-auto-tool-choice"
 min_plan: "GPU-128xCPU-640GB-8xRTXPRO6000"
 min_vram_gb: 90    # per-GPU floor: RTX PRO 6000 reports 95; ~48.8 GB per rank at TP=8
+min_disk_gb: 450   # 364 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+                   # Rounded up to the 450 GB floor this profile's own notes give.
+weights_gb: 364   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 validated: false   # newly added — no live run on this account yet
 untested_compute_capabilities: [12.0]   # RTX PRO 6000 is the target tier; nothing measured there
 requires_review: true

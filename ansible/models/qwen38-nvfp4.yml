@@ -53,5 +53,16 @@ extra_vllm_args:
   - "fp8"
 min_plan: "GPU-16xCPU-80GB-1xRTXPRO6000"
 min_vram_gb: 40                  # ~22 GB weights + KV; keeps an L4/L40S-sized card out
+min_disk_gb: 62   # 22 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+weights_gb: 22   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0     # NVFP4 needs Blackwell: B200 (cc 10.0) or RTX PRO 6000 (cc 12.0)
-validated: false                 # newly added — no live run on this account yet
+validated: true    # live run 2026-09-20 on 1x RTX PRO 6000 (spot) — see docs/validation.md
+# MEASURED 2026-09-20 on GPU-SPOT-16xCPU-80GB-1xRTXPRO6000 (driver 595.58.03, cc 12.0):
+#   KV pool 1,902,460 tokens · 7.26x concurrency at 262,144 · 88,087/97,887 MiB
+#   FLASHINFER attention backend · CUDA graphs PIECEWISE+FULL in 9 s (1.55 GiB) · engine init 123.9 s
+#   soak 3x20 @32768: factual 6/6, traps 2/2 declined, 60/60 needles, 0 wrong/rejected/timed-out
+#   ceiling: 65,429 / 130,803 / 259,512 prompt_tokens all PASS, container restart count unchanged.
+# max_model_len 262144 is therefore MEASURED, not inherited from the recipe. The dense NVFP4 path
+# takes a real CUTLASS kernel on sm120 as this profile predicted — no sign of vllm#54189 (which
+# would show as one token repeated), and none expected: that issue closed 2026-08-30.                 # newly added — no live run on this account yet

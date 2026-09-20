@@ -109,25 +109,35 @@ until you fully decommission (below). This is provider-agnostic; the numbers bel
 | Tier | Plan | €/h | Spot €/h | Fits |
 |---|---|---|---|---|
 | L40S 48 GB | `GPU-8xCPU-64GB-1xL40S` | 1.11 | 0.83 | FP8 ≤ ~31B (default, validated) |
-| RTX PRO 6000 96 GB | `GPU-16xCPU-80GB-1xRTXPRO6000` | 1.65 | 0.87 | every FP8 profile, dense NVFP4 — untested |
+| RTX PRO 6000 96 GB | `GPU-16xCPU-80GB-1xRTXPRO6000` | 1.65 | 1.24 | every FP8 profile, dense NVFP4 — untested |
 | H100 80 GB | `GPU-12xCPU-240GB-1xH100` | 1.79 | 1.78 | FP8 MoE (qwen36-35b, validated) |
-| B200 192 GB | `GPU-12xCPU-240GB-1xB200` | 4.50 | 3.38 | all NVFP4, single-GPU |
-| 2×RTX PRO 6000 | `GPU-32xCPU-160GB-2xRTXPRO6000` | 3.30 | 1.74 | — (no profile yet; glm53-flash-nvfp4 needs 0.97 util to fit) |
-| 4×RTX PRO 6000 | `GPU-64xCPU-320GB-4xRTXPRO6000` | 6.60 | 3.48 | **glm53-flash-nvfp4**, **qwen38-flash-next** |
-| 4×H100 | `GPU-48xCPU-960GB-4xH100` | ? | ? | qwen38-flash-next (the upstream-verified tier) |
-| 8×RTX PRO 6000 | `GPU-128xCPU-640GB-8xRTXPRO6000` | 13.20 | 6.96 | **k2-horizon-375b** (TP=8) |
-| 4×B200 | `GPU-48xCPU-960GB-4xB200` | 18.00 | 13.50 | GLM-5.2 NVFP4 (TP=4), glm53-flash FP8, DeepSeek vision |
-| 8×B200 | `GPU-96xCPU-1920GB-8xB200` | 36.00 | 27.00 | GLM-5.2 FP8 (TP=8), GLM-5.3, DeepSeek-V4-Pro |
+| B200 192 GB | `GPU-24xCPU-240GB-1xB200` | 4.50 | 3.38 | all NVFP4, single-GPU |
+| 2×RTX PRO 6000 | `GPU-32xCPU-160GB-2xRTXPRO6000` | 3.30 | 2.48 | — (no profile yet; glm53-flash-nvfp4 needs 0.97 util to fit) |
+| 4×RTX PRO 6000 | `GPU-64xCPU-320GB-4xRTXPRO6000` | 6.60 | 4.95 | **glm53-flash-nvfp4**, **qwen38-flash-next** |
+| 4×H100 | `GPU-48xCPU-960GB-4xH100` | 7.16 | 7.15 | qwen38-flash-next (the upstream-verified tier) |
+| 8×RTX PRO 6000 | `GPU-128xCPU-640GB-8xRTXPRO6000` | 13.20 | 9.90 | **k2-horizon-375b** (TP=8) |
+| 4×B200 | `GPU-96xCPU-960GB-4xB200` | 18.00 | 13.50 | GLM-5.2 NVFP4 (TP=4), glm53-flash FP8, DeepSeek vision |
+| 8×B200 | `GPU-192xCPU-1920GB-8xB200` | 36.00 | 27.00 | GLM-5.2 FP8 (TP=8), GLM-5.3, DeepSeek-V4-Pro |
 
 `bin/spin up` picks the plan from the profile's `min_plan` (or a preset's `swap_plan`) unless you
 pass `--plan`, so the bold rows above are what those models deploy onto by default. The full
 allowlist CI checks against is [`tests/plans.txt`](../tests/plans.txt) — keep the two in sync.
-The 4×H100 price is unrecorded here: UpCloud sells the plan (`qwen38-flash-next` cites it) but this
-repo has never captured its list rate.
+
+**Spot is a plan id, not a flag.** `GPU-SPOT-<the same suffix>` is a real identifier, so
+`bin/spin up --model X --plan GPU-SPOT-64xCPU-320GB-4xRTXPRO6000` works today with no code change.
+The provider can reclaim a spot server, so use it for validation runs — where losing the box costs
+minutes and the weights are already on `/data` — and not for anything serving traffic. The discount
+is 25% on L40S, RTX PRO 6000 and B200, and about nothing on H100.
+
+**These identifiers move.** On 2026-09-20 all three B200 ids in this repo were dead: UpCloud had
+doubled the vCPU count in the name (`GPU-12xCPU-240GB-1xB200` → `GPU-24xCPU-240GB-1xB200`, and so
+on), eleven profiles pointed at plans that no longer existed, and CI was green because it only
+compared the profiles to `tests/plans.txt`, which was stale too. `tests/check-plans.sh` asks the
+provider instead — run it after any plan change.
 
 Plan identifiers come from UpCloud's [GPU Server configurations](https://upcloud.com/docs/products/gpu-servers/configurations/);
-the number before `xCPU` is **cores**, not threads. L4 (24 GB, €0.58/h) and B300 (€6.67/h) are also
-offered — the L4 fits none of the current profiles, and no profile targets B300 yet.
+the number before `xCPU` is **cores**, not threads. L4 is also offered (24 GB, €0.58/h) and fits
+none of the current profiles. No B300 plan is published in `fi-hel2` as of 2026-09-20.
 
 Measured cold/warm timings and per-session costs are in [validation.md](validation.md)
 (“Timings & session cost”) — read those before an expensive tier.

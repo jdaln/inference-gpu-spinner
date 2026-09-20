@@ -1,19 +1,31 @@
-# UpCloud GPU plan identifiers this repo may deploy, with list price in EUR/hour (fi-hel2, 2026-07).
+# UpCloud GPU plan identifiers this repo may deploy, with prices in EUR/hour (fi-hel2).
+# Verified against the live API on 2026-09-20 with tests/check-plans.sh.
 #
 # This is the allowlist CI checks every profile's `min_plan` and every swap preset's `swap_plan`
-# against. bin/spin now reads those fields to decide which plan to deploy, so a typo would reach
+# against. bin/spin reads those fields to decide which plan to deploy, so a typo would reach
 # `tofu apply` instead of merely printing a wrong message.
 #
-# Keep in sync with the plan table in docs/gpu-spinner.md. Format: <plan-id> <eur-per-hour>.
-# A price of "?" means UpCloud publishes the plan but this repo has not recorded a list price.
+# THE PLAN IDS MOVE. On 2026-09-20 all three B200 identifiers in this file were dead — UpCloud had
+# doubled the vCPU count in the name (GPU-12xCPU-240GB-1xB200 -> GPU-24xCPU-240GB-1xB200, and so on)
+# and eleven profiles pointed at plans that no longer existed. The CI check above passed throughout,
+# because it compares the profiles to THIS file and this file was stale too. Run
+# `tests/check-plans.sh` (needs UPCLOUD_TOKEN) to compare it against the live /1.3/plan listing.
 #
-GPU-8xCPU-64GB-1xL40S            1.11
-GPU-16xCPU-80GB-1xRTXPRO6000     1.65
-GPU-12xCPU-240GB-1xH100          1.79
-GPU-32xCPU-160GB-2xRTXPRO6000    3.30
-GPU-12xCPU-240GB-1xB200          4.50
-GPU-64xCPU-320GB-4xRTXPRO6000    6.60
-GPU-48xCPU-960GB-4xH100          ?
-GPU-128xCPU-640GB-8xRTXPRO6000  13.20
-GPU-48xCPU-960GB-4xB200         18.00
-GPU-96xCPU-1920GB-8xB200        36.00
+# SPOT is a plain plan id, not a flag: pass `--plan GPU-SPOT-...` to bin/spin and it works today,
+# no terraform change. A spot server can be reclaimed by the provider, so use it for test runs
+# where a lost box costs minutes, not for anything serving traffic. Discounts are 25% on the RTX
+# PRO 6000 and B200 tiers, 25% on L40S, and ~0% on H100.
+#
+# Format: <plan-id> <eur-per-hour> <spot-eur-per-hour>   ("-" = no spot equivalent published)
+# Keep in sync with the plan table in docs/gpu-spinner.md.
+#
+GPU-8xCPU-64GB-1xL40S            1.11   0.83
+GPU-16xCPU-80GB-1xRTXPRO6000     1.65   1.24
+GPU-12xCPU-240GB-1xH100          1.79   1.78
+GPU-32xCPU-160GB-2xRTXPRO6000    3.30   2.48
+GPU-24xCPU-240GB-1xB200          4.50   3.38
+GPU-64xCPU-320GB-4xRTXPRO6000    6.60   4.95
+GPU-48xCPU-960GB-4xH100          7.16   7.15
+GPU-128xCPU-640GB-8xRTXPRO6000  13.20   9.90
+GPU-96xCPU-960GB-4xB200         18.00  13.50
+GPU-192xCPU-1920GB-8xB200       36.00  27.00

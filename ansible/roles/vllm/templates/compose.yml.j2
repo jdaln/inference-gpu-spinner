@@ -8,6 +8,20 @@ services:
     image: {{ vllm_image_override | default(vllm_image) }}
     restart: unless-stopped
     ipc: host                       # required by vLLM (shared memory); avoids cryptic CUDA errors
+{% if (cap_add | default([])) | length > 0 %}
+    # Extra Linux capabilities this profile needs. Docker's default seccomp profile does not simply
+    # allow-list syscalls — it gates some behind a matching capability, and denies them with EPERM
+    # otherwise. Measured 2026-09-20: qwen38-flash-next sets VLLM_PLE_CPU_OFFLOAD=1, whose offload
+    # worker passes CUDA tensors between processes with CUDA IPC. That path calls pidfd_getfd(2),
+    # which is gated behind CAP_SYS_PTRACE, so engine init died with
+    #   RuntimeError: pidfd_getfd: Operation not permitted
+    # in torch/multiprocessing/reductions.py -> rebuild_cuda_tensor. Granting the one capability is
+    # far narrower than seccomp=unconfined or pid=host, which are the other ways round it.
+    cap_add:
+{% for c in cap_add %}
+      - {{ c }}
+{% endfor %}
+{% endif %}
     command:
       # model as a positional arg (vllm serve deprecates --model)
       - "{{ model_repo }}"

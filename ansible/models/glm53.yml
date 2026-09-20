@@ -42,8 +42,12 @@ extra_vllm_args:
   - "--tool-call-parser"
   - "glm47"
   - "--enable-auto-tool-choice"
-min_plan: "GPU-96xCPU-1920GB-8xB200"
+min_plan: "GPU-192xCPU-1920GB-8xB200"
 min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~756 GB of weights across TP=8
+min_disk_gb: 800   # 704 GB of weights plus ~40 GB for the container image and
+                   # Docker's data-root, which share this disk.
+                   # Rounded up to the 800 GB floor this profile's own notes give.
+weights_gb: 704   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 validated: false   # newly added — no live run on this account yet
 requires_review: true
 health_wait_retries: 800   # x10s = 133 min — ~756 GB to pull, then TP=8 init across eight GPUs
