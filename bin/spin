@@ -241,8 +241,15 @@ Usage: bin/spin <command> [options]
   plan                   tofu plan for the ephemeral stack.
   swap-profiles          List the multi-model swap presets (ansible/swap-profiles/).
   validate               Capture exact validation evidence (context/KV/VRAM/test gen) for docs/validation.md.
-  soak [--rounds N] [--concurrency M] [--model NAME]
-                         Answer-quality + concurrent-load soak of the deployed model.
+  soak [--rounds N] [--concurrency M] [--context T] [--model NAME]
+                         Answer-quality soak: temp-0 factual battery, fabrication traps, then a
+                         graded long-context load — each of M parallel requests gets its own
+                         ~T-token haystack with a unique needle at a known depth and is graded on
+                         retrieving it. Default 3 rounds x 20 parallel x 32768 tokens. A wrong
+                         answer from an admitted request fails the command; rejections and timeouts
+                         are reported but do not (admission control, not correctness). T is clamped
+                         to the model's max_model_len. Prompts cross the public endpoint: ~2.5 MB
+                         per round at 32768, ~10 MB at 131072.
   help                   This message.
 
 Env (see .env.example): UPCLOUD_TOKEN, ACME_EMAIL, VLLM_API_KEY, [OPERATOR_IP|OPERATOR_CIDRS],
@@ -286,7 +293,9 @@ cmd_persistent_init() {
   local want="${WEIGHTS_SIZE_GB:-500}" diskid cur
   diskid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
   if [ -n "$diskid" ] && printf '%s' "$want" | grep -qE '^[0-9]+$'; then
-    cur="$(api GET "/storage/$diskid" 2>/dev/null | jq -r '.storage.size // empty')"
+    # || true: advisory size comparison. Under `set -e` with pipefail a failed API call here
+    # aborted the command substitution and killed bin/spin with a bare exit code (seen: 56).
+    cur="$(api GET "/storage/$diskid" 2>/dev/null | jq -r '.storage.size // empty' || true)"
     if printf '%s' "$cur" | grep -qE '^[0-9]+$'; then
       local rate=226; [ "${WEIGHTS_TIER:-maxiops}" = "standard" ] && rate=86
       if [ "$want" -gt "$cur" ]; then
@@ -442,12 +451,22 @@ cmd_up() {
   [ -n "$sd_tz" ]      && ans_args+=(-e "auto_shutdown_timezone=$sd_tz")
 
   # If a previous `down` auto-decommissioned the persistent disk, recreate it first — the server
-  # can't attach a weights disk that no longer exists. NOTE: the weights_storage_id output can be
-  # STALE after a decommission (`state rm` doesn't recompute outputs), so verify against the API,
-  # not just the output value.
-  local wid disk_ok=""; wid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
+  # can't attach a weights disk that no longer exists. The weights_storage_id output can be stale
+  # after a decommission (`state rm` doesn't recompute outputs), so verify against the API, not
+  # just the output value.
+  # Distinguish "the API says the disk is gone" from "the API call failed": treating a transient
+  # network error as a deleted disk sends the run into persistent-init for a disk that is fine.
+  # curl exit 22 is the -f HTTP-error case (404 = really gone); anything else is transport/API
+  # failure and must not trigger a recreate.
+  local wid disk_ok="" api_rc=0; wid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
   if printf '%s' "$wid" | grep -qE '^[0-9a-fA-F-]{36}$'; then
-    api GET "/storage/$wid" >/dev/null 2>&1 && disk_ok=1
+    api GET "/storage/$wid" >/dev/null 2>&1 || api_rc=$?
+    if [ "$api_rc" -eq 0 ]; then
+      disk_ok=1
+    elif [ "$api_rc" -ne 22 ]; then
+      warn "could not confirm the weights disk via the UpCloud API (curl exit $api_rc) — assuming it still exists rather than recreating it. Re-run if the deploy then fails on a missing disk."
+      disk_ok=1
+    fi
   fi
   if [ -z "$disk_ok" ]; then
     log "Persistent weights disk missing (decommissioned on a previous down?) — recreating it first..."
@@ -675,22 +694,33 @@ cmd_validate() {
 # Soak + answer-quality check for the currently-deployed model (single-model, or a llama-swap
 # backend by --model NAME). Reusable version of the docs/validation.md procedure:
 #   1) a temp-0 factual battery (auto-graded by substring) + fabrication traps (soft-checked),
-#   2) a concurrent-load round (does the box stay healthy + keep serving under parallel requests).
-# Usage:  bin/spin soak [--model NAME] [--rounds N] [--concurrency M]
+#   2) a graded long-context load (does the box stay healthy and still answer correctly).
+# Usage:  bin/spin soak [--model NAME] [--rounds N] [--concurrency M] [--context T]
 cmd_soak() {
-  local ep model="" rounds=3 conc=6
+  local ep model="" rounds=3 conc=20 ctx=32768 maxlen models
   while [ $# -gt 0 ]; do
     case "$1" in
       --model)       model="$2"; shift 2 ;;
       --rounds)      rounds="$2"; shift 2 ;;
       --concurrency) conc="$2";   shift 2 ;;
+      --context)     ctx="$2";    shift 2 ;;
       *) die "soak: unknown option '$1'" ;;
     esac
   done
+  case "$rounds$conc$ctx" in *[!0-9]*) die "soak: --rounds/--concurrency/--context must be integers." ;; esac
   ep="$(tofu_out endpoint)" || die "server is down."
   [ -n "${VLLM_API_KEY:-}" ] || die "VLLM_API_KEY not set (needed to query the model)."
-  [ -n "$model" ] || model="$(curl -fsS --max-time 25 "$ep/v1/models" -H "Authorization: Bearer $VLLM_API_KEY" 2>/dev/null | jq -r '.data[0].id // empty')"
+  models="$(curl -fsS --max-time 25 "$ep/v1/models" -H "Authorization: Bearer $VLLM_API_KEY" 2>/dev/null)"
+  [ -n "$model" ] || model="$(printf '%s' "$models" | jq -r '.data[0].id // empty')"
   [ -n "$model" ] || die "could not resolve served model from $ep/v1/models (still loading?)."
+  # Clamp the haystack to what the model accepts, so the defaults stay safe on a short-context
+  # profile instead of every request failing on context length.
+  maxlen="$(printf '%s' "$models" | jq -r --arg m "$model" '.data[] | select(.id==$m) | .max_model_len // empty' | head -1)"
+  case "$maxlen" in ''|*[!0-9]*) maxlen="" ;; esac
+  if [ -n "$maxlen" ] && [ "$ctx" -gt $(( maxlen - 2048 )) ]; then
+    ctx=$(( maxlen - 2048 ))
+    warn "soak: --context clamped to $ctx (model max_model_len=$maxlen, leaving room for the answer)."
+  fi
   log "Soak: model=$model  endpoint=$ep"
 
   # Ask one prompt at temp 0 with thinking suppressed; print the assistant text. Args: prompt [max_tokens]
@@ -739,24 +769,121 @@ cmd_soak() {
     fi
   done
 
-  # 2) Concurrent load — fire conc parallel requests per round; count how many return content.
-  echo "  --- concurrent load: $rounds rounds x $conc parallel ---"
+  # 2) Graded long-context load. Each request carries its own haystack with a needle at a known
+  # depth and is graded on retrieving it, because counting non-empty replies to one-line prompts
+  # measures availability only: vllm-project/vllm#55757 reports a broken sparse-MLA path on sm_120
+  # answering short prompts correctly and failing only at realistic lengths. Needles are synthetic
+  # ASCII (nothing to fold or normalise) and unique per request, so a prefix-cache hit from a
+  # sibling cannot fake a pass.
   local tmp; tmp="$(mktemp -d)"
-  local r i
+
+  # One haystack of roughly $1 tokens into $2. The 19/20 ratio is measured against this filler and
+  # tokenizer: 24,576 words -> 25,861 prompt_tokens, 49,152 -> 51,670 (~1.052 tokens per word). It
+  # only makes --context approximate; usage.prompt_tokens stays the number to report and record.
+  _soak_haystack() {
+    local want_tok="$1" out="$2" words line i
+    line="survey logistics inventory corridor ledger transcript appendix rotation calibration sequence manifest interval schedule tolerance baseline procedure checkpoint envelope threshold gradient"
+    words=$(( want_tok * 19 / 20 ))
+    : > "$out"
+    for (( i = 0; i < words / 20 + 1; i++ )); do printf '%s\n' "$line"; done >> "$out"
+  }
+
+  # Post one long prompt; emit "status<TAB>seconds<TAB>prompt_tokens<TAB>found|missing".
+  # Differs from _soak_ask on purpose:
+  #   * the body goes through a file — a 128k-token prompt as argv blows ARG_MAX;
+  #   * no -f, so an HTTP rejection stays distinguishable from a wrong answer (-f makes both empty);
+  #   * the timeout scales with context — a 128k prefill at 20-way does not fit in 90 s;
+  #   * max_tokens 256, not 32: this model inlines reasoning into content, and truncating before the
+  #     answer would score a working model wrong. Trivial retrieval measured 51 completion tokens.
+  # Args: prompt-file needle out-file
+  _soak_probe() {
+    local pf="$1" needle="$2" of="$3" body resp code secs ptok got tmo
+    body="$(mktemp)"; resp="$(mktemp)"
+    tmo=$(( 120 + ctx / 200 ))
+    jq -n --rawfile p "$pf" --arg m "$model" \
+      '{model:$m,messages:[{role:"user",content:$p}],max_tokens:256,temperature:0,
+        chat_template_kwargs:{enable_thinking:false}}' > "$body"
+    code="$(curl -sS -o "$resp" -w '%{http_code} %{time_total}' --max-time "$tmo" \
+      "$ep/v1/chat/completions" -H "Authorization: Bearer $VLLM_API_KEY" \
+      -H 'Content-Type: application/json' --data-binary "@$body" 2>/dev/null || printf '000 0')"
+    secs="${code#* }"; code="${code%% *}"
+    ptok="$(jq -r '.usage.prompt_tokens // 0' < "$resp" 2>/dev/null || printf 0)"
+    got="$(jq -r '(.choices[0].message.content // "") + " " + (.choices[0].message.reasoning_content // "")' < "$resp" 2>/dev/null || printf '')"
+    if printf '%s' "$got" | grep -qF "$needle"; then
+      printf '%s\t%s\t%s\tfound\n' "$code" "$secs" "$ptok" > "$of"
+    else
+      printf '%s\t%s\t%s\tmissing\n' "$code" "$secs" "$ptok" > "$of"
+    fi
+    rm -f "$body" "$resp"
+  }
+
+  echo "  --- graded long-context load: $rounds rounds x $conc parallel, ~$ctx tok each ---"
+  local depths=(head middle tail) r i d frac hay pf needle lines cut_at
   for r in $(seq 1 "$rounds"); do
     for i in $(seq 1 "$conc"); do
-      ( if [ -n "$(_soak_ask "Write two short sentences about the number $((r*100+i)).")" ]; then echo ok; else echo fail; fi ) > "$tmp/$r-$i" &
+      d="${depths[$(( (i - 1) % 3 ))]}"
+      case "$d" in head) frac=10 ;; middle) frac=50 ;; *) frac=90 ;; esac
+      needle="MERIDIAN-${r}${i}${frac}"
+      pf="$tmp/p-$r-$i"; hay="$tmp/h-$ctx"
+      [ -f "$hay" ] || _soak_haystack "$ctx" "$hay"
+      lines="$(wc -l < "$hay")"; cut_at=$(( lines * frac / 100 )); [ "$cut_at" -lt 1 ] && cut_at=1
+      {
+        printf 'Read the following archive dump carefully.\n\n'
+        head -n "$cut_at" "$hay"
+        printf '\nThe archival reference code for this cabinet is %s.\n\n' "$needle"
+        tail -n +$(( cut_at + 1 )) "$hay"
+        printf '\nQuestion: what is the archival reference code for this cabinet? Reply with just the code.\n'
+      } > "$pf"
+      ( _soak_probe "$pf" "$needle" "$tmp/r-$r-$i-$d" ) &
     done
     wait
   done
-  local ok reqs; ok="$(cat "$tmp"/* 2>/dev/null | grep -c '^ok$')"; reqs=$((rounds*conc)); rm -rf "$tmp"
-  echo "  load: $ok/$reqs requests returned content (rejections under load are expected — admission control)"
 
-  if curl -fsS --max-time 20 "$ep/v1/models" -H "Authorization: Bearer $VLLM_API_KEY" >/dev/null 2>&1; then
-    log "Soak OK — endpoint healthy after load. factual $pass/$total, load $ok/$reqs."
-  else
-    die "Soak: endpoint NOT healthy after load — investigate (docker logs / nvidia-smi via bin/spin ssh)."
+  # Tally. A rejection is capacity; a wrong answer is a correctness bug. Keep them apart.
+  local reqs=$((rounds*conc)) nfound=0 nwrong=0 nrej=0 ntmo=0 f code res
+  local lats=()
+  for f in "$tmp"/r-*; do
+    [ -f "$f" ] || continue
+    code="$(cut -f1 "$f")"; res="$(cut -f4 "$f")"
+    case "$code" in
+      200) if [ "$res" = found ]; then nfound=$((nfound+1)); else nwrong=$((nwrong+1)); fi
+           lats+=("$(cut -f2 "$f")") ;;
+      000) ntmo=$((ntmo+1)) ;;
+      *)   nrej=$((nrej+1)) ;;
+    esac
+  done
+  # Per-depth accuracy: an aggregate would hide a path that only fails at one depth.
+  local dd dtot dok
+  for dd in head middle tail; do
+    dtot="$(find "$tmp" -name "r-*-$dd" 2>/dev/null | wc -l | tr -d ' ')"
+    [ "$dtot" -gt 0 ] || continue
+    dok="$(cat "$tmp"/r-*-"$dd" 2>/dev/null | awk -F'\t' '$1==200 && $4=="found"' | wc -l | tr -d ' ')"
+    if [ "$dok" = "$dtot" ]; then
+      printf '    \033[32m✓\033[0m depth %-6s %s/%s retrieved\n' "$dd" "$dok" "$dtot"
+    else
+      printf '    \033[31m✗\033[0m depth %-6s %s/%s retrieved\n' "$dd" "$dok" "$dtot"
+    fi
+  done
+  local p50="-" p95="-" pmax="-" n idx
+  if [ "${#lats[@]}" -gt 0 ]; then
+    mapfile -t lats < <(printf '%s\n' "${lats[@]}" | sort -n)
+    n="${#lats[@]}"
+    p50="${lats[$(( n / 2 ))]}"
+    idx=$(( n * 95 / 100 )); [ "$idx" -ge "$n" ] && idx=$(( n - 1 ))
+    p95="${lats[$idx]}"; pmax="${lats[$(( n - 1 ))]}"
   fi
+  local ptok_med
+  ptok_med="$(cut -f3 "$tmp"/r-* 2>/dev/null | sort -n | awk '{a[NR]=$1} END{if (NR) print a[int(NR/2)+1]}')"
+  echo "  load: $nfound/$reqs correct, $nwrong wrong, $nrej rejected, $ntmo timed out"
+  echo "  prompt_tokens (median): ${ptok_med:-?}   latency p50/p95/max: ${p50}s / ${p95}s / ${pmax}s"
+  rm -rf "$tmp"
+
+  curl -fsS --max-time 20 "$ep/v1/models" -H "Authorization: Bearer $VLLM_API_KEY" >/dev/null 2>&1 \
+    || die "Soak: endpoint NOT healthy after load — investigate (docker logs / nvidia-smi via bin/spin ssh)."
+  # A wrong answer from an admitted request fails the command; rejections and timeouts are
+  # admission control and say nothing about correctness.
+  [ "$nwrong" -eq 0 ] || die "Soak: $nwrong admitted request(s) returned the wrong needle — long-context retrieval is broken (vllm-project/vllm#55757). Passing short prompts does not clear it."
+  log "Soak OK — factual $pass/$total, long-context $nfound/$reqs correct ($nrej rejected, $ntmo timed out)."
 }
 
 case "${1:-help}" in

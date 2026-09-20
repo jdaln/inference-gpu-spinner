@@ -5,22 +5,22 @@
 #
 # VALIDATED 2026-09-20 on 4x RTX PRO 6000 Blackwell Server Edition (driver 595.58.03, cc 12.0),
 # plan GPU-64xCPU-320GB-4xRTXPRO6000, fi-hel2. Measured: KV pool 4,552,849 tokens, 4.34x
-# concurrency at the full 1,048,576 context, 85,219/97,887 MiB per card, engine init 185 s
+# concurrency at 1,048,576 (~46x at the capped 98,304), 85,219/97,887 MiB per card, init 185 s
 # (graph capture 79 s PIECEWISE + 16 s FULL). validate OK; soak 6/6 factual, 2/2 fabrication
-# traps declined, 18/18 under concurrent load. Long-context needle-in-haystack retrieved a fact
-# planted at the head of the prompt at BOTH 24,455 and 80,455 prompt tokens (11.8 s / 7.9 s) —
-# that is the check that matters here, because vllm-project/vllm#55757 says a broken sparse-MLA
-# path on sm_120 still answers short prompts correctly and only fails at realistic lengths.
+# traps declined, 60/60 needles under 20-way graded long-context load. Needle-in-haystack also
+# retrieved a head-of-prompt fact at 24,455 and 80,455 prompt tokens (11.8 s / 7.9 s). That is the
+# check this model needs: vllm-project/vllm#55757 reports a broken sparse-MLA path on sm_120 still
+# answering short prompts correctly and failing only at realistic lengths.
 #
 # WHY THIS EXISTS. 4x RTX PRO 6000 is 6.60 EUR/h against 18.00 for 4x B200, and the NVFP4 build is
 # 175 GB of weights against 328 GB for FP8. Weights are 155.8 GB packed NVFP4 plus 19.3 GB BF16
 # (attention, vision and MTP stay BF16), so at TP=4 each rank holds ~43.8 GB against an 85.5 GB
 # budget at 0.90 — about 41.7 GB of KV per rank.
 #
-# 2x RTX PRO 6000 (3.30 EUR/h) does NOT fit at this utilisation: 175 GB against 190 GB physical
-# needs 0.97 and a short context. Worth revisiting once 4x has a measured run, not before.
+# 2x RTX PRO 6000 (3.30 EUR/h) does not fit at this utilisation: 175 GB against 190 GB physical
+# needs 0.97 and a short context.
 #
-# THE SPARSE-MLA PROBLEM, AND THE OVERLAY THAT SOLVES IT.
+# SPARSE MLA ON SM120, AND THE OVERLAY THAT FIXES IT.
 # This model's MLA layers are rope-free (qk_rope_head_dim: 0), and no stock vLLM build has an
 # SM120 kernel for that shape. Three failure modes are catalogued in vllm-project/vllm#53963: the
 # fp8_ds_mla cache writer asserts pe_dim == 64; bf16 KV finds no backend at all because
@@ -29,7 +29,7 @@
 # the SM120 kernel only covers the DeepSeek 576-wide layout. vllm-project/vllm#54929 does not help
 # either — its scope is that same DeepSeek geometry.
 #
-# vllm_plugins below closes the gap with an out-of-tree kernel. It is THIRD-PARTY CODE
+# vllm_plugins below closes the gap with an out-of-tree kernel. It is third-party code
 # (github.com/Libertai/vllm-sparse-mla-blackwell, Apache-2.0), pinned to a commit, built inside this
 # profile's own image and mounted read-only. It ships two vllm.general_plugins entry points, each
 # inert unless its environment variable is set, so nothing in vLLM is patched. It fixes:
@@ -38,7 +38,7 @@
 #      Server, RTX 5090 and GB10, at 8/16/32 heads per rank (TP=8/4/2 on this 64-head model).
 #   2. vllm-project/vllm#54189 — ModelOptNvFp4FusedMoE leaves w13_input_scale uninitialised and
 #      expects the checkpoint to fill it. A weight-only NVFP4 checkpoint (input_activations absent,
-#      which this one is) never does, it reads 0.0, and EVERY EXPERT OUTPUT IS MULTIPLIED BY ZERO
+#      which this one is) never does, it reads 0.0, and every expert output is multiplied by zero
 #      with no error. The tell is a model that loads and serves but emits one token repeatedly.
 # Remove the overlay once vllm-project/vllm#55277 and flashinfer-ai/flashinfer#5075 land in a
 # release image; both were open as of 2026-09-19.
@@ -50,59 +50,98 @@
 # FLAGS THAT ARE NOT PREFERENCES.
 #   --no-enable-flashinfer-autotune : without it the engine spins at 100% GPU with no output until
 #                                     the NCCL watchdog kills it. The autotune step is the culprit,
-#                                     not the CUTLASS MoE backend, so --moe-backend marlin is NOT
+#                                     not the CUTLASS MoE backend, so --moe-backend marlin is not
 #                                     needed here.
-#     MEASURED 2026-09-20: with autotune off, vLLM AUTO-SELECTS Marlin anyway —
+#     Measured 2026-09-20: with autotune off, vLLM auto-selects Marlin anyway —
 #       "Using 'MARLIN' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM',
 #        'FLASHINFER_CUTEDSL', ...]"
-#     So the flag stays unnecessary, but Marlin is what actually runs. Two consequences worth
-#     knowing: it is the W4A16 dequant path (weights decompressed to FP16 before the GEMM), and
-#     vllm-project/vllm#52225 reports Xid 13 warp errors on RTX PRO 6000 under SUSTAINED
-#     multi-hour load with Marlin MoE. A short validate cannot surface that — watch for it during
-#     long soaks, and record the run length that was actually exercised.
+#     So the flag stays unnecessary, but Marlin is what runs: the W4A16 dequant path (weights
+#     decompressed to FP16 before the GEMM). vllm-project/vllm#52225 reports Xid 13 warp errors on
+#     RTX PRO 6000 under sustained multi-hour load with Marlin MoE, which a short validate cannot
+#     surface — watch for it during long soaks and record the run length actually exercised.
 #   no --enforce-eager              : CUDA graphs capture normally with this overlay, and eager was
 #                                     measured 5-6x slower on this hardware. Do not add it.
 # fp8 KV is supported by the overlay kernel (bf16 also works, at roughly half the KV capacity).
 #
-# DISK: ~195 GB to download — 121 safetensors shards totalling 194.6 GB on the main revision. Note
-# that is LARGER than the 175 GB of loaded weights above: the on-disk shards carry the block scales
-# and padding that the VRAM figure does not. Size the disk from 195, not 175. (The HF repo also
-# reports ~587 GB of usedStorage, which counts every revision, not what a pull fetches.)
-# Set WEIGHTS_SIZE_GB to at least 250 and re-run bin/spin persistent-init BEFORE the first pull, or
+# DISK: ~195 GB to download — 121 safetensors shards totalling 194.6 GB on the main revision. That
+# is larger than the 175 GB of loaded weights above, because the on-disk shards carry block scales
+# and padding the VRAM figure does not; size from 195, not 175. (The HF repo reports ~587 GB of
+# usedStorage, which counts every revision, not what a pull fetches.)
+# Set WEIGHTS_SIZE_GB to at least 250 and re-run bin/spin persistent-init before the first pull, or
 # the download dies part-way with "No space left on device" on a GPU billed by the hour.
-# MEASURED 2026-09-20: /data was 29 GB used BEFORE any weights, because the docker role moves
-# Docker's data-root onto this disk and the cu130 image is ~8.7 GB. A 250 GB disk therefore leaves
-# ~206 GB for a ~195 GB pull — it fits, but only by ~11 GB. Size from weights + ~30 GB of images,
-# so 250 is the floor here and not the comfortable figure; prefer 300 if the disk is staying.
+# Measured 2026-09-20: /data was 29 GB used before any weights, because the docker role moves
+# Docker's data-root onto this disk and the cu130 image is ~8.7 GB. A 250 GB disk leaves ~206 GB
+# for a ~195 GB pull — ~11 GB of margin. Size from weights + ~30 GB of images: 250 is the floor,
+# prefer 300 if the disk is staying.
 # At MaxIOPS a 250 GB disk is ~EUR 55/mo standing. It is also above DECOMMISSION_THRESHOLD_GB
 # (default 150), so `bin/spin down` will remove it by default and the next run re-pulls 195 GB —
 # use `bin/spin down --keep-disk` or DECOMMISSION_ON_DOWN=never between test runs.
 #
+# CONTEXT CEILING. max_model_len is capped at 98304, not the checkpoint's native 1,048,576.
+# Without the cap one over-long request kills the engine for every other user on the box.
+#
+# Measured 2026-09-20, by prompt tokens per request:
+#     1 x 102,400  -> crash          10 x 98,100 -> pass 10/10 (p50 57 s)
+#     1 x 106,496  -> crash          10 x 65,403 -> pass 10/10 (p50 50 s)
+#     1 x 131,072  -> crash          20 x 51,670 -> pass 20/20 (p50 27 s)
+#     2 x 250,000  -> crash          20 x 25,861 -> pass 60/60 needles over 3 rounds (p50 27.4 s,
+#    20 x ~103,000 -> crash                         p95 31.0 s, head/middle/tail depths)
+# The boundary is between 98,100 and 102,400 prompt tokens per request, independent of how many
+# requests are in flight. Record prompt_tokens, not `bin/spin soak --context`: the haystack sizer
+# aims by words, so the requested figure runs ~25% high.
+#
+# Fault: CUDA illegal memory access in the KDA linear-attention path.
+#   vllm/models/glm5next/nvidia/ops/third_party/kda/kernels.py:1214 chunk_kda_with_fused_gate
+#     -> kernels.py:1126 chunk_kda_with_fused_gate_fwd -> prepare_chunk_indices(cu_seqlens, ...)
+#     -> vllm/third_party/flash_linear_attention/ops/index.py:27
+#   torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+# 34 of the 45 layers are KDA, i.e. stock vLLM code that the sparse-MLA overlay never touches.
+#
+# Ruled out, so nobody re-chases them:
+#   * prefix caching (vllm-project/vllm#55600 names KDA): 1 x 131,072 with a unique randomised
+#     haystack per request, no cache hits possible, crashes identically.
+#   * concurrency: one request at 102,400 is enough.
+#   * KV capacity: peaked at 17.8% during a crash; the 4.55M-token pool would hold 10 x 455k.
+#   * memory exhaustion: VRAM flat at 86,981/97,887 MiB per GPU (that is the pre-allocated 0.90
+#     pool, ~10.9 GB still free per card), host RAM 16 of 314 GB, no OOM kills. The exception is
+#     an out-of-bounds index, not OutOfMemoryError, so gpu_memory_utilization will not move it.
+#   * config: chunked prefill is already on with max_num_batched_tokens=8192.
+#   * this GPU and this overlay: vllm-project/vllm#54317 reports the same faulting frame on 4x B200
+#     (SM100) with the stock day-0 image, so the FP8 glm53-flash profile is exposed too. That report
+#     is sporadic under sustained traffic; the length-triggered repro above is deterministic and is
+#     worth adding to the thread.
+#
+# With the cap, vLLM rejects an over-long request with HTTP 400 instead of dying. It bounds the
+# blast radius but does not guarantee stability, since #54317 also fires sporadically under long
+# uptime — watch container restarts. Raise it only after the upstream kernel fix, and re-run
+# `bin/spin soak --context <new> --concurrency 10` first.
+#
+# Concurrency at 98,304: 4,552,849 KV tokens / 98,304 = ~46 by KV math, 10-way measured clean.
+# 5-10 concurrent users at ~98k each is the supported envelope.
+#
 # NO NVLINK on this plan: TP=4 runs over PCIe. If engine init hangs in NCCL rather than failing,
 # add NCCL_P2P_DISABLE: 1 to extra_env — it costs throughput, so do not set it pre-emptively.
 #
-# FIRST RUN — what to check, in order. Nothing here has been measured on this account.
+# WHAT TO CHECK ON A RE-RUN, in order:
 #   1. The driver major the gpu role prints ("Report the detected GPU topology"). This image is
-#      cu130 and needs r580+; it is also the answer to whether every other profile could move to a
-#      cu130 tag. Record it in docs/validation.md either way.
+#      cu130 and needs r580+; it also answers whether other profiles could move to a cu130 tag.
+#      Record it in docs/validation.md either way.
 #   2. The engine log says: Using FLASHINFER_MLA_SPARSE_SM120 attention backend. The overlay
 #      replaces that slot, so no --attention-backend flag is needed; if the line is missing, the
 #      plugin did not load and the run is not testing what you think.
 #   3. CUDA graphs capture (no --enforce-eager in the log).
-#   4. `bin/spin validate` returns COHERENT text. One token repeated over and over is the signature
+#   4. `bin/spin validate` returns coherent text. One token repeated over and over is the signature
 #      of the zeroed-expert fault (#54189) — it means VLLM_GLM53_MOE_INPUT_SCALE did not take, not
 #      that the model is bad.
-#   5. `bin/spin soak` — the concurrency and answer-quality pass. Run it, do not skip it because
-#      step 4 looked fine.
-#   6. A LONG-PROMPT request, not just a smoke test. vllm-project/vllm#55757 is explicit that
-#      broken sparse-MLA paths on sm_120 serve short prompts correctly and only fail at realistic
-#      lengths, so steps 4 and 5 alone cannot clear this model.
+#   5. `bin/spin soak` — the concurrency and answer-quality pass. Do not skip it because step 4
+#      looked fine; it is also what exercises long prompts, which a smoke test does not. Broken
+#      sparse-MLA paths on sm_120 serve short prompts correctly (vllm-project/vllm#55757).
 # Then add the row to docs/validation.md with KV pool, concurrency and VRAM.
 model_repo: "LibertAIDAI/GLM-5.3-Flash-NVFP4"
 served_name: "glm53-flash-nvfp4"
 vllm_image_override: "vllm/vllm-openai:glm53-flash-x86_64-cu130@sha256:0674a3ea3c971706cea310bca71daadff68ea1717c758d2f54affa5def001b86"
 tensor_parallel_size: 4
-max_model_len: 1048576
+max_model_len: 98304        # not the model's 1,048,576 — see CONTEXT CEILING above
 gpu_memory_utilization: 0.90
 dtype: "auto"
 enable_lora: false
@@ -129,8 +168,7 @@ min_vram_gb: 90    # per-GPU floor: RTX PRO 6000 reports 95, B200 179; keeps H10
 min_compute_capability: 10.0   # Blackwell; the overlay kernel covers sm_120 and sm_121
 min_driver_major: 580          # the image is a cu130 build
 validated: true    # live run 2026-09-20 — see docs/validation.md
-# Kept ON despite being validated: 6.60 EUR/h is still a deliberate spend, and the profile needs
-# a 4-GPU plan. bin/spin now derives that plan from min_plan, so the gate is about cost, not about
-# landing on the wrong tier.
+# Kept on despite validation: 6.60 EUR/h is a deliberate spend and the profile needs a 4-GPU plan.
+# bin/spin derives that plan from min_plan, so the gate is about cost, not the wrong tier.
 requires_review: true
 health_wait_retries: 300   # x10s = 50 min — ~175 GB to pull, plugin build, then TP=4 init

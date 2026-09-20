@@ -294,8 +294,13 @@ curl https://<dashed-ip>.sslip.io/v1/chat/completions \
 ```
 
 For a fuller check, `bin/spin validate` reports the served model, context length, KV cache size and
-VRAM use, and runs a test generation. `bin/spin soak` grades a short factual battery and fires
-parallel requests to confirm the box stays healthy under load.
+VRAM use, and runs a test generation. `bin/spin soak` grades a short factual battery, checks the
+model declines fabricated premises, then runs a **graded long-context load**: each of 20 parallel
+requests gets its own haystack with a unique needle at a known depth and is graded on retrieving
+it. A wrong answer from an admitted request fails the command; rejections and timeouts are reported
+separately, as admission control rather than a correctness problem. Scale it up with `--context`
+and `--rounds` — a model can pass at 32k and kill the engine at 128k. Prompts cross the public
+endpoint, so the heavy tiers move real bandwidth: ~2.5 MB per round at 32768, ~10 MB at 131072.
 
 ## Step 7 — Shutting down
 
@@ -387,7 +392,7 @@ bin/spin logs            # follow vLLM and Caddy, or llama-swap in multi-model m
 bin/spin ssh             # root shell on the box
 bin/spin plan            # tofu plan for the ephemeral stack, changes nothing
 bin/spin validate        # served model, context, KV cache, VRAM, test generation
-bin/spin soak            # answer-quality battery plus a concurrent-load round
+bin/spin soak            # answer-quality battery plus a graded 20-way long-context load
 bin/spin help            # every command and flag
 ```
 
