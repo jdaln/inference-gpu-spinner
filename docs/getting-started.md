@@ -360,7 +360,9 @@ The README carries the full table; the rules behind it are short:
 - Every profile declares the VRAM, GPU generation and GPU count it needs. A deploy onto the wrong
   plan fails in preflight, before vLLM starts and before any weights download. It will not run out
   of memory on a GPU you are already paying for.
-- A profile marked `requires_review` needs `--allow-unvalidated` and a large multi-GPU plan.
+- A plan costing more than `MAX_EUR_PER_HOUR` (default €10/h) needs `--allow-expensive`. The
+  refusal names the price, the daily cost and the cheaper spot id, and comes before anything is
+  provisioned.
 
 Each profile also names the tier it has been measured on. Running it elsewhere is allowed and
 prints a warning. Treat that deployment as a validation run: capture `bin/spin validate` and

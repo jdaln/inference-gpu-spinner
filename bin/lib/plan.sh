@@ -42,3 +42,51 @@ check_tfvars() {
       ssh_public_keys = [\"\$(cat ~/.ssh/id_ed25519.pub)\"]"
   fi
 }
+
+# Price of a plan in EUR/hour, from tests/plans.txt. Prints nothing if the plan is not listed.
+# Spot ids are not separate rows: GPU-SPOT-<suffix> reads the spot column of the GPU-<suffix> row.
+# awk, not python — bin/spin's dependency list deliberately has no python3 (see check_tfvars).
+plan_price() {
+  local p="$1" row col
+  case "$p" in
+    GPU-SPOT-*) row="GPU-${p#GPU-SPOT-}"; col=3 ;;
+    *)          row="$p";                 col=2 ;;
+  esac
+  awk -v r="$row" -v c="$col" '$1 == r { print $c; exit }' tests/plans.txt 2>/dev/null
+}
+
+# Refuse a plan above MAX_EUR_PER_HOUR unless the operator opts in.
+#
+# This replaces the old per-profile `requires_review` flag, retired 2026-09-21. That flag meant
+# "this needs an expensive plan, confirm" but read as "this is unvalidated", and its override
+# (`allow_unvalidated_model`) also switched off the VRAM floor, the compute-capability checks, the
+# driver floor and the disk check — six gates behind one badly-named flag. Its original premise was
+# also gone: it guarded against deploying a huge model onto the default L40S, which cannot happen
+# now that bin/spin derives the plan from min_plan.
+#
+# Price is the thing worth confirming, so confirm price. Reading it from tests/plans.txt means
+# every plan is covered automatically, including ones added later, with no per-profile flag to
+# forget — and tests/check-plans.sh keeps those prices honest against the provider.
+assert_plan_affordable() {   # assert_plan_affordable <plan-id> <what> <allow_expensive>
+  local plan="$1" what="$2" allow="$3" price max
+  [ -n "$plan" ] || return 0
+  [ -z "$allow" ] || return 0
+  max="${MAX_EUR_PER_HOUR:-10}"
+  price="$(plan_price "$plan")"
+  if [ -z "$price" ] || [ "$price" = "?" ]; then
+    warn "no recorded price for $plan — cannot check it against MAX_EUR_PER_HOUR=$max. Add it to tests/plans.txt."
+    return 0
+  fi
+  if awk -v p="$price" -v m="$max" 'BEGIN { exit !(p > m) }'; then
+    local hint="see tests/plans.txt for every plan and both prices"
+    case "$plan" in
+      GPU-SPOT-*) : ;;   # already the cheap id; suggesting one again would read as GPU-SPOT-SPOT-
+      *) hint="cheaper spot id: GPU-SPOT-${plan#GPU-} — $hint" ;;
+    esac
+    die "'$what' deploys on $plan at EUR $price/hour, above the MAX_EUR_PER_HOUR limit of $max.
+    That is about EUR $(awk -v p="$price" 'BEGIN{printf "%.0f", p*24}')/day if you leave it up.
+    If you mean it:  add --allow-expensive   (or raise MAX_EUR_PER_HOUR)
+    $hint."
+  fi
+  log "Plan $plan costs EUR $price/hour (limit $max)."
+}

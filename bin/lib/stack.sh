@@ -87,7 +87,7 @@ cmd_persistent_destroy() {
 
 cmd_up() {
   require_token
-  local model="${VLLM_MODEL:-qwen36}" plan="" flags_explicit="" swap_profile=""
+  local model="${VLLM_MODEL:-qwen36}" plan="" flags_explicit="" swap_profile="" allow_expensive=""
   local tf_args=() ans_args=()
   local sd_at="${AUTO_SHUTDOWN_AT:-}" sd_tz="${AUTO_SHUTDOWN_TZ:-}" sd_enabled="${AUTO_SHUTDOWN:-}"
   while [ $# -gt 0 ]; do
@@ -96,6 +96,7 @@ cmd_up() {
       --plan)         plan="$2";  flags_explicit=1; shift 2 ;;
       --swap-profile) swap_profile="$2"; flags_explicit=1; shift 2 ;;
       --allow-unvalidated) ans_args+=(-e allow_unvalidated_model=true); shift ;;
+      --allow-expensive)   allow_expensive=1; shift ;;
       # Pass an Ansible extra-var straight through. Extra vars outrank the profile's own
       # include_vars, so this is how you deploy the same profile at a different setting without
       # editing the file: `-e max_model_len=262144` for a token-ceiling search, or the fallbacks
@@ -186,6 +187,8 @@ cmd_up() {
     log "No --plan given; using $plan from the ${swap_profile:-$model} profile."
   fi
   [ -n "$plan" ] && tf_args+=(-var "plan=$plan")
+  # Cost gate. Runs after the plan is settled and before anything is created, so a refusal is free.
+  assert_plan_affordable "$plan" "${swap_profile:-$model}" "$allow_expensive"
   build_operator_tf_args
   tf_args+=(${OPERATOR_TF_ARGS[@]+"${OPERATOR_TF_ARGS[@]}"})
   assert_operator_reachable

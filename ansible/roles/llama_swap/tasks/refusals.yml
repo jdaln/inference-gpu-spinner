@@ -65,22 +65,6 @@
   loop_control:
     label: "{{ item.name | default('<no name>') }}"
 
-# Single-model mode refuses a requires_review profile without --allow-unvalidated (roles/vllm). The
-# same profile reached through a preset used to bypass that entirely, so a preset could deploy a
-# 36 EUR/h profile on a debug warning.
-- name: Preflight — no requires_review profile in the preset without --allow-unvalidated
-  ansible.builtin.assert:
-    that:
-      - not (item.requires_review | default(false) | bool) or
-        (allow_unvalidated_model | default(false) | bool)
-    fail_msg: >-
-      Swap preset entry '{{ item.name }}' is marked requires_review (its floor is a large, expensive
-      plan) and --allow-unvalidated was not passed. Single-model mode refuses this too; the preset
-      path must not be the cheap way around it.
-  loop: "{{ swap_models | default([]) }}"
-  loop_control:
-    label: "{{ item.name | default('<no name>') }}"
-
 - name: Warn when a preset entry needs multiple GPUs (swap-in will be slow)
   ansible.builtin.debug:
     msg: >-

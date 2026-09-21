@@ -84,11 +84,14 @@ Required by this repo's own gates:
 | `health_wait_retries` | `(weights_GB / 7.56 + engine_init_minutes) x 1.5 x 6`. 7.56 GB/min is the measured authenticated download rate. Default 90 = 15 min, which is too short for anything over ~100 GB. |
 
 Optional gates: `min_compute_capability`, `unsupported_compute_capabilities` +
-`unsupported_reason`, `untested_compute_capabilities`, `min_driver_major`, `requires_review`,
-`gated`, `vllm_image_override`, `extra_env`, `vllm_plugins`, `enable_lora`.
+`unsupported_reason`, `untested_compute_capabilities`, `min_driver_major`, `gated`,
+`vllm_image_override`, `extra_env`, `vllm_plugins`, `enable_lora`.
 
-`requires_review: true` for anything that needs a genuinely expensive plan. Note that
-`--allow-unvalidated` turns off **every** hardware preflight, not just this one.
+Cost needs no key. `bin/spin` prices the resolved `min_plan` from `tests/plans.txt` and refuses
+anything above `MAX_EUR_PER_HOUR` (default 10) until the operator passes `--allow-expensive`, so an
+expensive profile is gated the moment its plan is. (`requires_review`, which used to do this per
+profile, was retired 2026-09-21.) `--allow-unvalidated` is unrelated: it turns off **every**
+hardware preflight.
 
 Pin `vllm_image_override` **by digest** when the tag is mutable — several of these tags have
 already moved:

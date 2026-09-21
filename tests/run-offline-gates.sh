@@ -65,6 +65,7 @@ run "every min_plan/swap_plan is in plans.txt" bash -c '
   for f in ansible/swap-profiles/*.yml; do check "$f" swap_plan; done
   exit $rc'
 run "plans.txt matches the live UpCloud listing" tests/check-plans.sh
+run "cost gate (plan_price / MAX_EUR_PER_HOUR)" tests/check-cost-gate.sh
 
 echo "--- swap presets ---"
 for f in ansible/swap-profiles/*.yml; do

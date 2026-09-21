@@ -74,6 +74,10 @@ jobs:
           for f in ansible/swap-profiles/*.yml; do check "$f" swap_plan; done
           exit $rc
 
+      - name: the plan cost gate behaves
+        # Replaced the per-profile requires_review flag, which had its own regression test.
+        run: tests/check-cost-gate.sh
+
       - name: tests/plans.txt still matches UpCloud's live plan listing
         # The check above only proves the repo agrees with itself. This one asks the provider.
         # Skips cleanly when the secret is absent, so forks and PRs from forks still pass.

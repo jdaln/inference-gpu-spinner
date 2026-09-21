@@ -90,5 +90,4 @@ unsupported_reason: >-
   vllm-project/vllm#55757, where a short-prompt smoke test passes and realistic prompts fail.
   vllm-project/vllm#54929 is the open fix for this geometry; see the note at the top of this profile
 validated: false     # newly added — no live run on this account yet
-requires_review: true
 health_wait_retries: 600   # x10s = 100 min — ~511 GB to pull, then TP=4 init and graph capture

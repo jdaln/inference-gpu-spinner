@@ -1,12 +1,12 @@
 ---
-# GLM-5.2 (Z.ai / zai-org) FP8 — 753B total / ~40B active MoE, text-only, 1M ctx. INTENTIONALLY kept
-# requires_review: an 8x B200 node is ~36 €/h, too expensive to validate — gated ON PURPOSE (cost),
-# not a reliability doubt. Run the validated NVFP4 path (glm52-nvfp4.yml, 4x B200 ~18 €/h) instead.
+# GLM-5.2 (Z.ai / zai-org) FP8 — 753B total / ~40B active MoE, text-only, 1M ctx.
+# INTENTIONALLY NOT VALIDATED: an 8x B200 node is ~36 EUR/h, too expensive to justify — a cost
+# decision, not a reliability doubt. Run the validated NVFP4 path instead (glm52-nvfp4.yml,
+# 4x B200 ~18 EUR/h), which is the runnable GLM-5.2 lane on this account.
 # WARNING: FP8 weights ~704 GB fit ONLY an 8x B200 node (8x179 GB) — NOT 8x H100 (8x80 = 640 GB is
 # too small), and not an 8x RTX PRO 6000 node either: 8x96 = 768 GB leaves no working headroom and
-# has no NVLink for TP=8. requires_review gates it (the vllm role refuses without
-# -e allow_unvalidated_model=true).
-# The RUNNABLE GLM path on this account is glm52-nvfp4.yml (NVFP4 on 4x B200 at half the price).
+# has no NVLink for TP=8. bin/spin refuses any plan above MAX_EUR_PER_HOUR (default 10) unless
+# --allow-expensive is passed, so this tier needs a deliberate opt-in.
 model_repo: "zai-org/GLM-5.2-FP8"
 served_name: "glm52"
 tensor_parallel_size: 8
@@ -29,7 +29,6 @@ min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB). Not 76: at that value 
                    # node (95 GB/GPU) clears the gate and then OOMs on ~704 GB of weights against a
                    # 684 GB budget, after the whole download. The file comment above says 8x96 does
                    # not fit; this is the check that enforces it.
-requires_review: true
 validated: false   # never run live. WITHOUT this key the vllm role defaults `validated` to true and
                    # the "UNTESTED MODEL" warning never prints, so this profile silently claimed a
                    # live run it has never had. Added 2026-09-20 during the RTX validation campaign.

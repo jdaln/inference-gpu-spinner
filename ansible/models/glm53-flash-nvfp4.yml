@@ -181,8 +181,7 @@ weights_gb: 181   # measured 2026-09-20 from the HF file listing (sum of .siblin
 min_compute_capability: 10.0   # Blackwell; the overlay kernel covers sm_120 and sm_121
 min_driver_major: 580          # the image is a cu130 build
 validated: true    # live run 2026-09-20 — see docs/validation.md
-# Kept on despite validation: 6.60 EUR/h is a deliberate spend and the profile needs a 4-GPU plan.
-# bin/spin derives that plan from min_plan, so the tier takes care of itself and this gate is
-# purely about the spend.
-requires_review: true
+# At 6.60 EUR/h the 4-GPU plan sits under the default MAX_EUR_PER_HOUR of 10, so a bare
+# `bin/spin up --model glm53-flash-nvfp4` deploys it without an opt-in. Lower the limit if that is
+# more per hour than you want a stray command to be able to spend.
 health_wait_retries: 300   # x10s = 50 min — ~175 GB to pull, plugin build, then TP=4 init

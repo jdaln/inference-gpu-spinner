@@ -15,7 +15,7 @@
       multi_model_enabled=true but no models resolved. Use --swap-profile <name>
       (see: bin/spin swap-profiles), or pass swap_profiles=[<profile names>] / a swap_models list.
 
-# Per-entry preflights (hardware gates, shapes llama-swap cannot express, requires_review).
+# Per-entry preflights (hardware gates, and shapes llama-swap cannot faithfully express).
 # In their own file so tests/swap-refusals.yml can import and prove them without a GPU.
 - name: Preflight every entry in the preset
   ansible.builtin.import_tasks: refusals.yml

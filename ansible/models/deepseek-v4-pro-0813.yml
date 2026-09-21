@@ -6,9 +6,9 @@
 # router FP8. 1,048,576 native context via YaRN. 0813 supersedes the preview and adds fused DSpark.
 #
 # THE MOST EXPENSIVE PROFILE HERE: eight GPUs and ~893 GB of weights, i.e.
-# GPU-192xCPU-1920GB-8xB200 at ~36 EUR/h — the glm52 tier, so requires_review gates it the same way
-# (the vllm role refuses without --allow-unvalidated). Read the disk note below before the first
-# run; the standing cost of that disk is the largest in this repo.
+# GPU-192xCPU-1920GB-8xB200 at ~36 EUR/h — the glm52 tier, so bin/spin refuses it until you pass
+# --allow-expensive (or raise MAX_EUR_PER_HOUR). Read the disk note below before the first run; the
+# standing cost of that disk is the largest in this repo.
 #
 # PINNED IMAGE. Fused-DSpark checkpoints need vLLM 0.25.0+; the shared pin is v0.23.0, so this uses
 # v0.29.0, the newest release.
@@ -80,5 +80,4 @@ unsupported_reason: >-
   6000 node, which is also PCIe-only with no NVLink for TP=8. DeepSeek-style sparse MLA has no
   working cc 12.0 attention path either (vllm-project/vllm#55757)
 validated: false     # newly added — no live run on this account yet
-requires_review: true
 health_wait_retries: 900   # x10s = 150 min — ~893 GB to pull, then TP=8 init across eight GPUs

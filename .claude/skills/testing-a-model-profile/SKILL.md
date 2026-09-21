@@ -14,7 +14,8 @@ into a 90-minute pull, or recording a number nobody measured.
 1. **`bin/spin status` is step zero**, before anything else. This repo has sat with a €6.60/h
    server record in tofu state and nobody knew. Check before you plan, and again before you stop.
 2. **State the euros before every spend**, keep a running total, and print it at each batch
-   boundary. Stop and ask when you reach the ceiling the user gave you.
+   boundary. Stop and ask when you reach the ceiling the user gave you. `bin/spin` enforces its own
+   floor here: a plan above `MAX_EUR_PER_HOUR` (default €10) needs `--allow-expensive`.
 3. **Every number you record must come from output you actually saw.** Paste the command and its
    output into the run log. Never carry a figure over from another tier, another model, or a
    profile comment.

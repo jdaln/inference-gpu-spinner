@@ -56,7 +56,9 @@ Usage: bin/spin <command> [options]
                          a mismatch with the profile's is an error rather than a silent resize.
                          --swap-profile NAME serves several models on one box via llama-swap (one in
                          VRAM at a time); presets live in ansible/swap-profiles/ (see swap-profiles).
-                         --allow-unvalidated lets a requires_review profile deploy (needs a big --plan).
+                         --allow-expensive deploys a plan above MAX_EUR_PER_HOUR (default 10).
+                         --allow-unvalidated overrides the HARDWARE preflights (VRAM, compute
+                         capability, known-bad GPU list, driver, disk). It is not a cost flag.
                          -e k=v passes an Ansible extra-var through (repeatable). Extra vars beat
                          the profile, so this deploys the same model at a different setting without
                          editing it: -e max_model_len=262144, -e vllm_image_override=<tag>.
@@ -102,6 +104,7 @@ Usage: bin/spin <command> [options]
   help                   This message.
 
 Env (see .env.example): UPCLOUD_TOKEN, ACME_EMAIL, VLLM_API_KEY, [OPERATOR_IP|OPERATOR_CIDRS],
+  [MAX_EUR_PER_HOUR=10]   (refuse a costlier plan unless --allow-expensive; prices from tests/plans.txt)
   [HF_TOKEN], [AUTO_SHUTDOWN=true|false], [AUTO_SHUTDOWN_AT=HH:MM], [AUTO_SHUTDOWN_TZ=Area/City],
   [WEIGHTS_SIZE_GB=NNN], [WEIGHTS_TIER=maxiops|standard]   (persistent disk size/tier = standing cost)
   [DECOMMISSION_ON_DOWN=auto|never], [DECOMMISSION_THRESHOLD_GB=NNN]   (auto-free a big disk on down)

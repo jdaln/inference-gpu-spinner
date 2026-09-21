@@ -10,7 +10,7 @@
 #
 # 8x B200. The recipe's single-node options are 8x H200 or 8x H20 (141 GB each) for FP8, and 8x B200
 # (180 GB each) to reach 1M context with an FP8 KV cache. UpCloud has neither H200 nor H20, so
-# 8x B200 it is — ~36 EUR/h, the glm52 tier, hence requires_review. 8x H100 would be 640 GB against
+# 8x B200 it is — ~36 EUR/h, the glm52 tier, hence the cost gate. 8x H100 would be 640 GB against
 # ~756 GB of weights, and 8x RTX PRO 6000 768 GB with nothing left for KV and no NVLink;
 # min_vram_gb keeps both out.
 #
@@ -49,5 +49,4 @@ min_disk_gb: 800   # 704 GB of weights plus ~40 GB for the container image and
                    # Rounded up to the 800 GB floor this profile's own notes give.
 weights_gb: 704   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 validated: false   # newly added — no live run on this account yet
-requires_review: true
 health_wait_retries: 800   # x10s = 133 min — ~756 GB to pull, then TP=8 init across eight GPUs

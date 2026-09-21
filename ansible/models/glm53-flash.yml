@@ -9,7 +9,7 @@
 # MLA needs.
 #
 # 4x B200 matches the recipe's verified TP4-on-one-GB200-tray (768 GB) configuration — ~18 EUR/h,
-# hence requires_review. Hopper is supported by the implementation but cannot use an FP8 KV cache
+# hence the cost gate. Hopper is supported by the implementation but cannot use an FP8 KV cache
 # for this model and must run BF16 KV, so min_compute_capability pins the Blackwell path the flags
 # below assume.
 #
@@ -58,5 +58,4 @@ unsupported_reason: >-
   build (vllm-project/vllm#53963), and the failure only appears at realistic prompt lengths
   (vllm-project/vllm#55757). glm53-flash-nvfp4 is the RTX PRO 6000 path
 validated: false   # newly added — no live run on this account yet
-requires_review: true
 health_wait_retries: 400   # x10s = 67 min — ~328 GB to pull, then TP=4 init

@@ -52,5 +52,4 @@ weights_gb: 1454   # measured 2026-09-20 from the HF file listing (sum of .sibli
 min_compute_capability: 10.0
 min_driver_major: 580          # the kimi-k3 image is a cu130 build and needs an r580+ host driver
 validated: false               # newly added — no live run on this account yet
-requires_review: true
 health_wait_retries: 1500      # x10s = 250 min — ~1561 GB to pull, then TP=8 init

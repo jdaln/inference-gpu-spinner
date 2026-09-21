@@ -87,14 +87,14 @@ model is still waiting for someone to measure it.
 | `qwen36-27b-nvfp4`, `gemma4-31b-nvfp4` | (same models, dense) | NVFP4 | B200 | B200; also RTX PRO 6000 via the `rtxpro6000` preset |
 | `qwen36-35b-nvfp4`, `gemma4-26b-nvfp4` | (same models, MoE) | NVFP4 | **RTX PRO 6000** (was B200) | B200 **and RTX PRO 6000** |
 | `glm52-nvfp4` | GLM-5.2 (753B MoE) | NVFP4 | 4×B200 | 4×B200 |
-| `glm53-flash` | GLM-5.3-Flash, FP8 build | FP8 | 4×B200 — `requires_review` | — (new) |
-| `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | 8×B200 — `requires_review` | — (new) |
-| `k2-horizon-375b` | K2-Horizon-375B-A23B (379B-A27B MoE) | FP8 | **8×RTX PRO 6000** (TP=8) — `requires_review` | — (new) |
+| `glm53-flash` | GLM-5.3-Flash, FP8 build | FP8 | 4×B200 — €18/h | — (new) |
+| `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | 8×B200 — €36/h | — (new) |
+| `k2-horizon-375b` | K2-Horizon-375B-A23B (379B-A27B MoE) | FP8 | **8×RTX PRO 6000** (TP=8) — €13.20/h | — (new) |
 | `kimi-k3` | Kimi K3 (93L, 896 experts, **multimodal**) | compressed-tensors | **no UpCloud plan fits** | — (new) |
-| `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | 4×B200 — `requires_review` | — (new) |
-| `deepseek-v41-flash` | DeepSeek-V4.1-Flash (552B + 196B Engram MoE, **multimodal**) | MXFP4+MXFP8 | 4×B200 — `requires_review` | — (new) |
-| `deepseek-v4-pro-0813` | DeepSeek-V4-Pro-0813 (1.6T-A49B MoE) | FP4+FP8 | 8×B200 — `requires_review` | — (new) |
-| `glm52` | GLM-5.2 | FP8 | 8×B200 — `requires_review` (kept gated: ~36 €/h to test) | — |
+| `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | 4×B200 — €18/h | — (new) |
+| `deepseek-v41-flash` | DeepSeek-V4.1-Flash (552B + 196B Engram MoE, **multimodal**) | MXFP4+MXFP8 | 4×B200 — €18/h | — (new) |
+| `deepseek-v4-pro-0813` | DeepSeek-V4-Pro-0813 (1.6T-A49B MoE) | FP4+FP8 | 8×B200 — €36/h | — (new) |
+| `glm52` | GLM-5.2 | FP8 | 8×B200 — €36/h, too costly to validate | — |
 
 **The RTX PRO 6000 line.** 96 GB, compute capability 12.0 — Blackwell, but a different family from
 the B200's 10.0. At €1.65/h for a single card and €6.60 for four, against €4.50 and €18.00 for the
@@ -135,12 +135,16 @@ run as a validation, capture `bin/spin validate` **and `bin/spin soak`**, and ad
 and doing it on a CPU box instead of a GPU is about 150× cheaper. If the profile's `max_model_len`
 is the recipe's number rather than a measurement, `bin/spin ceiling` finds the real boundary.
 Two skills in [`.claude/skills/`](.claude/skills/) walk an agent through both jobs:
-`adding-a-model-profile` (offline, free) and `testing-a-model-profile` (live, billed). Nine
-profiles are gated behind `requires_review` (pass `--allow-unvalidated` to run anyway): `glm52`,
-`glm53` and `deepseek-v4-pro-0813` cost ~€36/h on an 8×B200 node; `glm53-flash`,
-`deepseek-v41-flash` and `deepseek-v4-flash-vision` need four B200s and a container image outside
-the shared pin; `k2-horizon-375b` and `glm53-flash-nvfp4` are large multi-GPU runs; and `kimi-k3`
-fits no plan here.
+`adding-a-model-profile` (offline, free) and `testing-a-model-profile` (live, billed).
+
+**The price of the plan is what gates a deploy.** `bin/spin up` reads the resolved plan's hourly
+rate from [`tests/plans.txt`](tests/plans.txt) and refuses anything above `MAX_EUR_PER_HOUR`
+(default €10) until you pass `--allow-expensive`; the refusal comes before anything is provisioned.
+That covers the 8×B200 profiles at €36/h (`glm52`, `glm53`, `deepseek-v4-pro-0813`), the 4×B200
+ones at €18/h (`glm53-flash`, `deepseek-v41-flash`, `deepseek-v4-flash-vision`) and
+`k2-horizon-375b` at €13.20/h. `kimi-k3` fits no plan here at all, so its preflights refuse it
+whatever you pass. `--allow-unvalidated` is a different flag: it overrides the hardware preflights
+(VRAM, compute capability, known-bad GPU list, driver, disk) and says nothing about cost.
 
 **Why two profiles serve the same model.** `glm53-flash` (FP8, 4×B200, €18/h) and
 `glm53-flash-nvfp4` (4×RTX PRO 6000, €6.60/h) are the same checkpoint, and so are `glm52` and

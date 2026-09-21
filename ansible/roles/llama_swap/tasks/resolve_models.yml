@@ -27,7 +27,6 @@
       validated: "{{ _profile.validated | default(true) }}"
       tensor_parallel_size: "{{ _profile.tensor_parallel_size | default(1) }}"
       dtype: "{{ _profile.dtype | default('auto') }}"
-      requires_review: "{{ _profile.requires_review | default(false) }}"
       health_wait_retries: "{{ _profile.health_wait_retries | default(90) }}"
       # Carried so the role can REFUSE them: the llama-swap backend is a bare `docker run` with no
       # per-model environment and no plugin mounts (see llama-swap.yaml.j2), so a profile relying on

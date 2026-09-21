@@ -29,7 +29,7 @@
 # min_plan to GPU-64xCPU-320GB-4xRTXPRO6000, and add the overlay to vllm_plugins the way
 # glm53-flash-nvfp4.yml does.
 #
-# requires_review: only NVIDIA GB200 NVL4 (TP4 + expert parallel) and AMD MI350X have a published
+# Expensive tier: only NVIDIA GB200 NVL4 (TP4 + expert parallel) and AMD MI350X have a published
 # vision run, and UpCloud has neither. The nearest verified-equivalent topology is 4x B200 with
 # NVLink at ~18 EUR/h — too costly to validate speculatively. 2x B200 (TP=2, 384 GB, ~9 EUR/h) also
 # clears the 202 GB budget and is what the ROCm run used, but has no published NVIDIA run.
@@ -76,5 +76,4 @@ unsupported_reason: >-
   vllm-project/vllm#55757, where a short-prompt smoke test passes and realistic prompts fail.
   vllm-project/vllm#41834 is the open SM12x enabler; see the note at the top of this profile
 validated: false     # newly added — no live run on this account yet
-requires_review: true
 health_wait_retries: 150   # x10s = 25 min — ~168 GB of weights plus TP=4 engine init and DSpark setup
