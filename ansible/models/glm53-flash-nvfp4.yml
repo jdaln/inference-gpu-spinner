@@ -174,9 +174,7 @@ extra_vllm_args:
   - "--enable-auto-tool-choice"
 min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
 min_vram_gb: 90    # per-GPU floor: RTX PRO 6000 reports 95, B200 179; keeps H100 (79) out
-min_disk_gb: 250   # 181 GB of weights plus ~40 GB for the container image and
-                   # Docker's data-root, which share this disk.
-                   # Rounded up to the 250 GB floor this profile's own notes give.
+min_disk_gb: 280   # disk size to provision: (weights_gb + 80) / 0.934
 weights_gb: 181   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0   # Blackwell; the overlay kernel covers sm_120 and sm_121
 min_driver_major: 580          # the image is a cu130 build

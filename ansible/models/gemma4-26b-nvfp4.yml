@@ -39,7 +39,6 @@ extra_vllm_args:
 min_plan: "GPU-16xCPU-80GB-1xRTXPRO6000"   # 1.65/h list, 1.24 spot; the 1xB200 lane (4.50/h)
                    # also serves this profile.
 min_vram_gb: 40                  # real weight+KV floor; the capability gates below pin the family
-min_disk_gb: 58   # 18 GB of weights plus ~40 GB for the container image and
-                   # Docker's data-root, which share this disk.
+min_disk_gb: 110   # disk size to provision: (weights_gb + 80) / 0.934
 weights_gb: 18   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0     # NVFP4 needs Blackwell — no L4/L40S/H100

@@ -53,8 +53,7 @@ extra_vllm_args:
   - "fp8"
 min_plan: "GPU-16xCPU-80GB-1xRTXPRO6000"
 min_vram_gb: 40                  # ~22 GB weights + KV; keeps an L4/L40S-sized card out
-min_disk_gb: 62   # 22 GB of weights plus ~40 GB for the container image and
-                   # Docker's data-root, which share this disk.
+min_disk_gb: 110   # disk size to provision: (weights_gb + 80) / 0.934
 weights_gb: 22   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0     # NVFP4 needs Blackwell: B200 (cc 10.0) or RTX PRO 6000 (cc 12.0)
 validated: true    # live run 2026-09-20 on 1x RTX PRO 6000 (spot) — see docs/validation.md

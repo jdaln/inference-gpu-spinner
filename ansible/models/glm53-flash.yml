@@ -47,9 +47,7 @@ extra_vllm_args:
   - "--enable-auto-tool-choice"
 min_plan: "GPU-96xCPU-960GB-4xB200"
 min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~306 GiB of weights across TP=4
-min_disk_gb: 400   # 306 GB of weights plus ~40 GB for the container image and
-                   # Docker's data-root, which share this disk.
-                   # Rounded up to the 400 GB floor this profile's own notes give.
+min_disk_gb: 420   # disk size to provision: (weights_gb + 80) / 0.934
 weights_gb: 306   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 min_compute_capability: 10.0   # FP8 KV cache for this model is Blackwell-only; Hopper needs BF16 KV
 unsupported_compute_capabilities: [12.0]

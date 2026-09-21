@@ -79,7 +79,7 @@ Required by this repo's own gates:
 |---|---|
 | `min_vram_gb` | Per-GPU floor. Set it high enough to keep out a plan that would OOM *after* the download. |
 | `weights_gb` | The real download size: sum `.siblings[].size` from the HF API. The deploy-time disk preflight reads this key. |
-| `min_disk_gb` | Measured weights + ~40 GB (container image and Docker's data-root share the disk). Sizing advice for `bin/spin persistent-init`. |
+| `min_disk_gb` | The disk size to provision, not the free space a deploy needs: `(weights_gb + 80) / 0.934`, rounded up to 10. The 80 GB is the headroom `ansible/prefetch.yml` asserts (container image plus Docker's data-root, which share the disk); the 0.934 is ext4's 5% root reserve, so a 500 GB volume offers 467 GB (measured 2026-09-21). Skipping the reserve leaves a profile too small to pass its own prefetch preflight. |
 | `validated: false` | Always, on a new profile. Remove it only when a dated `docs/validation.md` row exists. |
 | `health_wait_retries` | `(weights_GB / 7.56 + engine_init_minutes) x 1.5 x 6`. 7.56 GB/min is the measured authenticated download rate. Default 90 = 15 min, which is too short for anything over ~100 GB. |
 

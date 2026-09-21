@@ -145,9 +145,9 @@
   failed_when: (data_space.stdout | trim | length) == 0
 
 # This checks what a deploy needs — the weights still missing, plus room for the image — which is a
-# different question from `min_disk_gb`. That key is sizing advice for `bin/spin persistent-init`:
-# how big to make the disk for a cold start, with the container image, Docker's data-root and room
-# for a second model.
+# different question from `min_disk_gb`. That key is the size to provision for a cold start,
+# (weights_gb + 80) / 0.934: 80 GB of headroom for the image and Docker's data-root, divided by
+# what ext4 leaves usable after its 5% root reserve.
 #
 # Measured live 2026-09-20: qwen38-flash-next has min_disk_gb 300, its 173 GB of weights were
 # already prefetched, and 72 GB was free — enough for its ~30 GB image several times over. The

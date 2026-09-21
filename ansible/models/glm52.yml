@@ -35,5 +35,5 @@ validated: false   # never run live. WITHOUT this key the vllm role defaults `va
 health_wait_retries: 800   # x10s = 133 min. 704 GB of shards at ~126 MB/s is ~93 min of download
                            # alone, before TP=8 init. The default of 90 (15 min) gave up long before
                            # the pull finished, on a 36 EUR/h node.
-min_disk_gb: 800   # ~704 GB of weights plus ~30 GB of Docker images on the same volume.
+min_disk_gb: 840   # disk size to provision: (weights_gb + 80) / 0.934
 weights_gb: 704   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)

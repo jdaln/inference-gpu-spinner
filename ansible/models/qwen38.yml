@@ -51,8 +51,7 @@ extra_vllm_args:
   - "fp8"
 min_plan: "GPU-8xCPU-64GB-1xL40S"
 min_vram_gb: 40                  # ~31 GB weights + KV; an L4's 24 GB cannot hold it
-min_disk_gb: 69   # 29 GB of weights plus ~40 GB for the container image and
-                   # Docker's data-root, which share this disk.
+min_disk_gb: 120   # disk size to provision: (weights_gb + 80) / 0.934
 weights_gb: 29   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 validated: true    # live runs 2026-09-20 (RTX PRO 6000) and 2026-09-21 (L40S, its own lane)
 # MEASURED 2026-09-21 on GPU-SPOT-8xCPU-64GB-1xL40S (46,068 MiB, cc 8.9, driver 595.58.03), the

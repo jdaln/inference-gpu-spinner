@@ -88,9 +88,7 @@ extra_vllm_args:
   - "--enable-auto-tool-choice"
 min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
 min_vram_gb: 76                  # per-GPU floor: ~43 GiB per rank at TP=4; keeps both 4xH100 and 4xRTXPRO6000
-min_disk_gb: 300   # 173 GB of weights plus ~40 GB for the container image and
-                   # Docker's data-root, which share this disk.
-                   # Rounded up to the 300 GB floor this profile's own notes give.
+min_disk_gb: 300   # disk size to provision: (weights_gb + 80) / 0.934; raised to this profile's stated floor
 weights_gb: 173   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
 validated: true    # live run 2026-09-20 on 4x RTX PRO 6000 (spot) — see docs/validation.md
 # MEASURED 2026-09-20 on GPU-SPOT-64xCPU-320GB-4xRTXPRO6000 (driver 595.58.03, cc 12.0):
