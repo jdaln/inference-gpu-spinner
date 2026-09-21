@@ -143,6 +143,9 @@
 #      looked fine; it is also what exercises long prompts, which a smoke test does not. Broken
 #      sparse-MLA paths on sm_120 serve short prompts correctly (vllm-project/vllm#55757).
 # Then add the row to docs/validation.md with KV pool, concurrency and VRAM.
+#
+# PROVENANCE: a third-party NVFP4 conversion (LibertAIDAI), not a vendor build, so its quality may
+# differ from the original weights. glm53-flash.yml serves the same model from Z.ai's FP8 release.
 model_repo: "LibertAIDAI/GLM-5.3-Flash-NVFP4"
 served_name: "glm53-flash-nvfp4"
 vllm_image_override: "vllm/vllm-openai:glm53-flash-x86_64-cu130@sha256:0674a3ea3c971706cea310bca71daadff68ea1717c758d2f54affa5def001b86"

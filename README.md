@@ -77,7 +77,7 @@ model is still waiting for someone to measure it.
 | Profile | Model | Quant | Main lane (default plan) | Measured on |
 |---|---|---|---|---|
 | `qwen36` (default) | Qwen3.6-27B | FP8 | L40S | L40S |
-| `qwen38` | Qwen3.8-27B | FP8 | L40S | **RTX PRO 6000** (L40S lane still unmeasured) |
+| `qwen38` | Qwen3.8-27B | FP8 | L40S | **L40S** and RTX PRO 6000 |
 | `qwen38-nvfp4` | Qwen3.8-27B | NVFP4 | RTX PRO 6000 | **RTX PRO 6000** |
 | `qwen38-flash-next` | Qwen3.8-Flash-Next (125B-A6B MoE + 51B N-gram) | FP8 | **4×RTX PRO 6000** | **4×RTX PRO 6000** |
 | `glm53-flash-nvfp4` | GLM-5.3-Flash (321B-A18B MoE, **multimodal**) | NVFP4 | **4×RTX PRO 6000** | **4×RTX PRO 6000** (context capped at 98304) |

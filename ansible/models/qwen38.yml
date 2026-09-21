@@ -15,10 +15,10 @@
 # allocates outside the --gpu-memory-utilization budget, so a tight fit dies in capture however that
 # fraction is set. Drop it on a 96 GB RTX PRO 6000 or a B200.
 #
-# max_model_len 131072 is a starting point; the checkpoint goes to 262,144. FP8 weights are ~31 GB against an
-# L40S's ~46 GiB usable — between qwen36 (27 GB, serves 262144 here) and gemma4-31b (33 GB, capped
-# to 65536). Raise it toward the native 262144 on a larger card, or once a live L40S run shows the
-# KV pool has room.
+# max_model_len 131072 against a native 262,144 is a measured choice, not a cautious one — the
+# MEASURED block at the foot of this file has both settings on the L40S lane. For context, FP8
+# weights are ~31 GB against an L40S's ~46 GiB usable, between qwen36 (27 GB, serves 262144 here)
+# and gemma4-31b (33 GB, capped to 65536).
 #
 # MTP: the checkpoint carries a Multi-Token Prediction head that works in every precision (measured
 # acceptance 0.771 for FP8). Left off so the first validation run tests the model alone — a failure
@@ -54,15 +54,21 @@ min_vram_gb: 40                  # ~31 GB weights + KV; an L4's 24 GB cannot hol
 min_disk_gb: 69   # 29 GB of weights plus ~40 GB for the container image and
                    # Docker's data-root, which share this disk.
 weights_gb: 29   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
-validated: true    # live run 2026-09-20 on 1x RTX PRO 6000 (spot) — see docs/validation.md
-# MEASURED 2026-09-20 on GPU-SPOT-16xCPU-80GB-1xRTXPRO6000 (driver 595.58.03, cc 12.0):
-#   KV pool 1,743,257 tokens · 13.30x concurrency at 131,072 · 88,147/97,887 MiB
-#   FLASHINFER attention · model load 27.57 GiB in 72.8 s · engine init 41.5 s
-#   soak 3x20 @32768: factual 6/6, traps 2/2 declined, 60/60 needles, 0 wrong/rejected/timed-out
+validated: true    # live runs 2026-09-20 (RTX PRO 6000) and 2026-09-21 (L40S, its own lane)
+# MEASURED 2026-09-21 on GPU-SPOT-8xCPU-64GB-1xL40S (46,068 MiB, cc 8.9, driver 595.58.03), the
+# lane min_plan names:
+#   KV pool 359,719 tokens · 2.74x concurrency at 131,072 · 41,023/46,068 MiB
+#   load 27.57 GiB in 72.9 s · engine init 51.2 s
+#   soak 3x20 @32768: factual 6/6, traps 2/2, 60/60 needles, 0 wrong · p50 73.2 s
+#   ceiling: 128,766 prompt_tokens passes — the full deployed context serves.
 #
-# max_model_len STAYS AT 131072. This card has room for the native 262144 (the KV pool would still
-# give ~6.6x concurrency), but min_plan is an L40S with 46 GiB, where the pool is far smaller and
-# 131072 is the value that was sized for it. Raising it from a 96 GiB measurement would set the
-# default lane's context from hardware the default lane never runs on. Measure on an L40S first.                 # newly added — no live run on this account yet
-untested_compute_capabilities: [12.0]   # also fits RTX PRO 6000 / H100, neither measured
+# WHY max_model_len STAYS 131072. Deployed at the native 262144 on the same card: KV pool 372,123,
+# concurrency 1.42x, one 259,512-token request passes in 173.8 s, and three concurrent 260k requests
+# all returned the correct needle with none rejected — vLLM queued a 2.1x oversubscribed pool rather
+# than refusing. The slowest of those three waited 9.8 minutes, so the full window costs latency
+# rather than correctness, and turns a 3-user box into a 1-user box. Take it deliberately for
+# single-user or batch work:
+#   bin/spin up --model qwen38 --plan GPU-8xCPU-64GB-1xL40S -e max_model_len=262144
+# The 2026-09-20 run on a 96 GiB RTX PRO 6000 (KV 1,743,257, 13.30x) has 4.8x more KV and cannot be
+# used to size this lane.
 health_wait_retries: 120         # x10s = 20 min — ~31 GB download plus a 64-layer hybrid load

@@ -18,7 +18,6 @@
 # block-scaled GEMM returning invalid output on cu129. Both upstream fixes had already landed:
 # flashinfer-ai/flashinfer#2708 closed 2026-04-20 and vllm-project/vllm#54189 closed 2026-08-30,
 # before this image was built on 2026-06-13. Check a ticket before trusting a gate.
-# Evidence: docs/validation-runs/2026-09-20-rtx-campaign.md
 model_repo: "nvidia/Gemma-4-26B-A4B-NVFP4"
 served_name: "gemma4-26b-a4b-nvfp4"
 tensor_parallel_size: 1
