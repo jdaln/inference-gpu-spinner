@@ -13,6 +13,26 @@ resource "upcloud_storage" "weights" {
   }
 }
 
+# An optional second disk, for running one model without disturbing what is cached on the primary.
+#
+# Why this exists: the primary disk is an LRU cache you grow as models get bigger, and UpCloud can
+# never shrink a disk. So a one-off experiment on a large checkpoint either forces a permanent
+# growth of the primary, or evicts weights someone else is about to use. A separate, disposable
+# disk avoids both. Created 2026-09-21 to serve `custom_model` while a 364 GB k2-horizon cache sat
+# on the primary.
+#
+# Deliberately without prevent_destroy, unlike the primary: this one is meant to be thrown away. Set
+# weights_alt_size_gb back to 0 (or run the destroy) when the experiment is done, and its standing
+# cost goes with it.
+resource "upcloud_storage" "weights_alt" {
+  count = var.weights_alt_size_gb > 0 ? 1 : 0
+
+  title = "${var.prefix}-weights-alt"
+  size  = var.weights_alt_size_gb
+  tier  = var.weights_tier
+  zone  = var.zone
+}
+
 resource "upcloud_floating_ip_address" "vip" {
   zone   = var.zone
   family = "IPv4"

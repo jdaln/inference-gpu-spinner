@@ -105,6 +105,7 @@ Usage: bin/spin <command> [options]
 
 Env (see .env.example): UPCLOUD_TOKEN, ACME_EMAIL, VLLM_API_KEY, [OPERATOR_IP|OPERATOR_CIDRS],
   [MAX_EUR_PER_HOUR=10]   (refuse a costlier plan unless --allow-expensive; prices from tests/plans.txt)
+  [WEIGHTS_DISK=primary|alt]   (alt = the optional second data disk; see terraform/persistent)
   [HF_TOKEN], [AUTO_SHUTDOWN=true|false], [AUTO_SHUTDOWN_AT=HH:MM], [AUTO_SHUTDOWN_TZ=Area/City],
   [WEIGHTS_SIZE_GB=NNN], [WEIGHTS_TIER=maxiops|standard]   (persistent disk size/tier = standing cost)
   [DECOMMISSION_ON_DOWN=auto|never], [DECOMMISSION_THRESHOLD_GB=NNN]   (auto-free a big disk on down)

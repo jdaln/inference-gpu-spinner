@@ -21,3 +21,8 @@ output "sslip_host" {
 output "zone" {
   value = var.zone
 }
+
+output "weights_alt_storage_id" {
+  description = "UUID of the optional second data disk, or \"\" when weights_alt_size_gb is 0."
+  value       = length(upcloud_storage.weights_alt) > 0 ? upcloud_storage.weights_alt[0].id : ""
+}

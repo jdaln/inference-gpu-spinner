@@ -18,7 +18,8 @@ data "terraform_remote_state" "persistent" {
 }
 
 locals {
-  weights_id = data.terraform_remote_state.persistent.outputs.weights_storage_id
+  _alt_id    = try(data.terraform_remote_state.persistent.outputs.weights_alt_storage_id, "")
+  weights_id = var.weights_disk == "alt" ? local._alt_id : data.terraform_remote_state.persistent.outputs.weights_storage_id
 
   _allow_raw = length(var.operator_cidrs) > 0 ? var.operator_cidrs : (
     var.operator_ip != "" ? [var.operator_ip] : ["${trimspace(data.http.myip[0].response_body)}/32"]

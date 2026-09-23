@@ -1,6 +1,25 @@
 # shellcheck shell=bash
 # Sourced by bin/spin. Lifecycle commands: persistent stack, up/down, start/stop, status/logs/ssh/plan.
 
+# Which persistent data disk this invocation targets, and its UUID.
+#
+# WEIGHTS_DISK=alt selects the optional second disk (terraform/persistent, weights_alt_size_gb),
+# for running one model without growing or evicting the shared cache. Everything that touches a
+# disk goes through here, so `down` can never decommission the disk you were not using — that
+# mistake would silently delete someone else's cached weights.
+weights_output_name() {
+  case "${WEIGHTS_DISK:-primary}" in
+    alt)     printf 'weights_alt_storage_id' ;;
+    primary) printf 'weights_storage_id' ;;
+    *) die "WEIGHTS_DISK must be 'primary' or 'alt', got '${WEIGHTS_DISK}'." ;;
+  esac
+}
+
+# Pass the selection to the ephemeral / prefetch stacks so they attach the same disk.
+weights_disk_tf_args() {
+  printf -- '-var\nweights_disk=%s\n' "${WEIGHTS_DISK:-primary}"
+}
+
 cmd_persistent_init() {
   require_token
   # Disk size/tier are the standing-cost knobs — let the operator set them in .env instead of
@@ -12,7 +31,7 @@ cmd_persistent_init() {
   # Warn before a size change: growing the disk raises the 24/7 bill, and UpCloud CANNOT shrink a
   # disk (only decommission + re-init smaller). Compare the requested size to the live disk.
   local want="${WEIGHTS_SIZE_GB:-500}" diskid cur
-  diskid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
+  diskid="$(tofu_output "$PERSIST_DIR" "$(weights_output_name)")"
   if [ -n "$diskid" ] && printf '%s' "$want" | grep -qE '^[0-9]+$'; then
     # || true: advisory size comparison. Under `set -e` with pipefail a failed API call here
     # aborted the command substitution and killed bin/spin with a bare exit code (seen: 56).
@@ -65,7 +84,7 @@ cmd_persistent_destroy() {
   printf '%s' "$srv" | grep -qE '^[0-9a-fA-F-]{36}$' || srv=""
   [ -z "$srv" ] || die "an ephemeral GPU server still exists ($srv) — run 'bin/spin down' first."
   local diskid ip
-  diskid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
+  diskid="$(tofu_output "$PERSIST_DIR" "$(weights_output_name)")"
   ip="$(tofu_output "$PERSIST_DIR" floating_ip)"
   [ -n "$diskid$ip" ] || die "no persistent resources in state — nothing to decommission."
   warn "PERSISTENT DECOMMISSION — IRREVERSIBLE. This will:"
@@ -201,7 +220,7 @@ cmd_up() {
   # decommission (`state rm` doesn't recompute outputs), so verify against the API. And tell "the
   # API says it's gone" from "the API call failed": curl exit 22 is the -f HTTP-error case (404 =
   # really gone), anything else is a transport failure that must not trigger a recreate.
-  local wid disk_ok="" api_rc=0; wid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
+  local wid disk_ok="" api_rc=0; wid="$(tofu_output "$PERSIST_DIR" "$(weights_output_name)")"
   if printf '%s' "$wid" | grep -qE '^[0-9a-fA-F-]{36}$'; then
     api GET "/storage/$wid" >/dev/null 2>&1 || api_rc=$?
     if [ "$api_rc" -eq 0 ]; then
@@ -219,6 +238,8 @@ cmd_up() {
     cmd_persistent_init -auto-approve
   fi
 
+  while IFS= read -r _a; do [ -n "$_a" ] && tf_args+=("$_a"); done < <(weights_disk_tf_args)
+  [ "${WEIGHTS_DISK:-primary}" = primary ] || log "Using the ALT data disk (WEIGHTS_DISK=alt)."
   log "Provisioning GPU server (model=$model)..."
   tofu_init "$EPHEMERAL_DIR"
   local apply_log; apply_log="$(mktemp)"
@@ -297,7 +318,7 @@ down_decommission_disk() {
     return 0
   fi
   local diskid size
-  diskid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
+  diskid="$(tofu_output "$PERSIST_DIR" "$(weights_output_name)")"
   printf '%s' "$diskid" | grep -qE '^[0-9a-fA-F-]{36}$' || return 0   # no disk in state — nothing to do
   size="$(api GET "/storage/$diskid" 2>/dev/null | jq -r '.storage.size // empty')"
   printf '%s' "$size" | grep -qE '^[0-9]+$' || { warn "could not read disk size — leaving the persistent disk in place."; return 0; }
@@ -445,7 +466,7 @@ cmd_prefetch() {
   fi
 
   check_tfvars
-  local wid; wid="$(tofu_output "$PERSIST_DIR" weights_storage_id)"
+  local wid; wid="$(tofu_output "$PERSIST_DIR" "$(weights_output_name)")"
   printf '%s' "$wid" | grep -qE '^[0-9a-fA-F-]{36}$' \
     || die "no persistent weights disk in state — run 'bin/spin persistent-init' first."
 
@@ -466,6 +487,8 @@ cmd_prefetch() {
     warn "no ssh_public_keys found in $EPHEMERAL_DIR/terraform.tfvars — the prefetch box will be unreachable."
   fi
 
+  while IFS= read -r _a; do [ -n "$_a" ] && tf_args+=("$_a"); done < <(weights_disk_tf_args)
+  [ "${WEIGHTS_DISK:-primary}" = primary ] || log "Using the ALT data disk (WEIGHTS_DISK=alt)."
   log "Provisioning the prefetch box (${#models[@]} profile(s): ${models[*]})..."
   tofu_init "$PREFETCH_DIR"
   "$TOFU" -chdir="$PREFETCH_DIR" apply -auto-approve ${tf_args[@]+"${tf_args[@]}"} \

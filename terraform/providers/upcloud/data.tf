@@ -20,7 +20,8 @@ data "terraform_remote_state" "persistent" {
 locals {
   floating_ip = data.terraform_remote_state.persistent.outputs.floating_ip
   sslip_host  = data.terraform_remote_state.persistent.outputs.sslip_host
-  weights_id  = data.terraform_remote_state.persistent.outputs.weights_storage_id
+  _alt_id     = try(data.terraform_remote_state.persistent.outputs.weights_alt_storage_id, "")
+  weights_id  = var.weights_disk == "alt" ? local._alt_id : data.terraform_remote_state.persistent.outputs.weights_storage_id
 
   # Allowlisted sources for SSH(22) + HTTPS(443): explicit CIDRs, else a single
   # operator_ip, else this machine's auto-detected public IP. Bare IPs -> /32.

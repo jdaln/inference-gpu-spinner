@@ -64,3 +64,19 @@ variable "persistent_state_path" {
   type        = string
   default     = ""
 }
+
+variable "weights_disk" {
+  description = <<-EOT
+    Which persistent data disk to attach: "primary" (the shared cache) or "alt" (the optional
+    second disk, see weights_alt_size_gb in terraform/persistent). bin/spin passes this from
+    WEIGHTS_DISK. Choosing "alt" when no alt disk exists is an error rather than a silent
+    fallback — attaching the wrong disk would quietly re-download or evict someone's cache.
+  EOT
+  type        = string
+  default     = "primary"
+
+  validation {
+    condition     = contains(["primary", "alt"], var.weights_disk)
+    error_message = "weights_disk must be \"primary\" or \"alt\"."
+  }
+}
