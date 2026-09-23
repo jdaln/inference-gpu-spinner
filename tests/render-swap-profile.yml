@@ -31,6 +31,15 @@
           - rendered.models is defined
           - (rendered.models | length) == (swap_models | length)
           - (rendered.models | length) > 0
+          # Top-level keys are easy to lose to Jinja whitespace control: a `{{ '{#-' }}` before this
+          # one once stripped the preceding newline and buried `healthCheckTimeout:` inside a
+          # comment, which parses fine as YAML and silently reverts llama-swap to its own default.
+          - rendered.healthCheckTimeout is defined
+          - (rendered.healthCheckTimeout | int) >= 600
+          # Every backend must carry the parallelism and dtype the profile declares. The template
+          # used to omit both, so a TP=4 profile in a preset silently ran TP=1.
+          - rendered.models.values() | map(attribute='cmd') | select('search', '--tensor-parallel-size') | list | length == (swap_models | length)
+          - rendered.models.values() | map(attribute='cmd') | select('search', '--dtype') | list | length == (swap_models | length)
         fail_msg: "preset '{{ preset }}' renders invalid llama-swap YAML or a model-count mismatch"
       vars:
         rendered: "{{ lookup('ansible.builtin.file', '/tmp/render-swap-' ~ preset ~ '.yaml') | from_yaml }}"

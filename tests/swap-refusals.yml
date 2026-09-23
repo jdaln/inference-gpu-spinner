@@ -1,0 +1,111 @@
+---
+# CI guard: the llama_swap role must refuse a preset entry it cannot serve faithfully.
+#
+# Why: the llama-swap backend is a bare `docker run` (roles/llama_swap/templates/llama-swap.yaml.j2).
+# It carries the image, repo, context, memory fraction, TP, dtype and extra_vllm_args — and nothing
+# else. A profile that needs a per-model environment variable or an out-of-tree plugin overlay would
+# start and serve with that setting silently absent, which is worse than not deploying: the failure
+# signature for a zeroed NVFP4 MoE (vllm-project/vllm#54189) is one token repeated, and that reads
+# as a bad model rather than a bad deployment.
+#
+# Run:  ansible-playbook tests/swap-refusals.yml
+- name: A preset entry needing extra_env / vllm_plugins is refused
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    swap_models_dir: "{{ playbook_dir }}/../ansible/models"
+    # glm53-flash-nvfp4 needs VLLM_GLM53_CUDA_SPARSE_MLA + VLLM_GLM53_MOE_INPUT_SCALE and a pinned
+    # out-of-tree kernel. Without them it serves one token repeatedly.
+    _preset_profiles: ["glm53-flash-nvfp4"]
+    # A machine that satisfies every hardware gate, so only the new checks can fail.
+    gpu_total_vram_gb: 95
+    gpu_compute_cap: 12.0
+    gpu_driver_major: 595
+    gpu_count: 4
+    gpu_name: "RTX PRO 6000 Blackwell Server Edition"
+    allow_unvalidated_model: true    # isolate the extra_env/plugins refusal from the hardware gates
+  tasks:
+    - name: Load shared defaults
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../ansible/group_vars/all.yml"
+
+    # group_vars/all.yml sets `swap_profiles: []` and include_vars outranks play vars, so setting
+    # the list in `vars:` above would be silently wiped, every loop would skip, and this test would
+    # pass by exercising nothing. set_fact after the include is what actually takes.
+    - name: Select the preset under test
+      ansible.builtin.set_fact:
+        swap_profiles: "{{ _preset_profiles }}"
+
+    - name: Resolve the preset, then run the role's preflights (must fail)
+      block:
+        - name: Resolve the preset into swap_models
+          ansible.builtin.import_tasks: "{{ playbook_dir }}/../ansible/roles/llama_swap/tasks/resolve_models.yml"
+        - name: Run the same preflights the role runs
+          ansible.builtin.import_tasks: "{{ playbook_dir }}/../ansible/roles/llama_swap/tasks/refusals.yml"
+        - name: The preflight failed to refuse
+          ansible.builtin.fail:
+            msg: >-
+              REGRESSION: a preset containing glm53-flash-nvfp4 was accepted. That profile declares
+              extra_env and vllm_plugins, neither of which the llama-swap backend command carries,
+              so it would serve silently-wrong output.
+      rescue:
+        - name: Refused as expected
+          ansible.builtin.assert:
+            that: "'cannot be served faithfully' in (ansible_failed_result | to_json)"
+            success_msg: "ok — the preset was refused with the expected reason"
+            fail_msg: >-
+              The preflight failed, but not for the expected reason. Got:
+              {{ ansible_failed_result | to_json }}
+
+# Second guard: a hybrid / linear-attention entry must not reach the backend with prefix caching on.
+# The entry is built directly rather than resolved from a profile, because every hybrid profile in
+# the repo already carries the flag — a fixture is the only way to prove the check still fires if
+# one stops carrying it. Measured cause: vllm#56960 (open), vllm#51483 (merged 2026-09-16).
+- name: A hybrid preset entry without --no-enable-prefix-caching is refused
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    gpu_total_vram_gb: 95
+    gpu_compute_cap: 12.0
+    gpu_driver_major: 595
+    gpu_count: 4
+    gpu_name: "RTX PRO 6000 Blackwell Server Edition"
+    allow_unvalidated_model: true
+  tasks:
+    - name: Load shared defaults
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../ansible/group_vars/all.yml"
+
+    # Shaped exactly like a resolve_models.yml entry, minus the flag. extra_env/vllm_plugins are
+    # empty so the faithfulness refusal cannot fire and mask this one.
+    - name: Build a hybrid entry that forgot the flag
+      ansible.builtin.set_fact:
+        swap_models:
+          - name: "fixture-hybrid"
+            model_repo: "example/hybrid"
+            max_model_len: 131072
+            tensor_parallel_size: 1
+            dtype: "auto"
+            args: ["--kv-cache-dtype", "fp8"]
+            extra_env: {}
+            vllm_plugins: []
+            hybrid_recurrent_state: true
+
+    - name: Run the role's preflights (must fail)
+      block:
+        - name: Run the same preflights the role runs
+          ansible.builtin.import_tasks: "{{ playbook_dir }}/../ansible/roles/llama_swap/tasks/refusals.yml"
+        - name: The preflight failed to refuse
+          ansible.builtin.fail:
+            msg: >-
+              REGRESSION: a hybrid entry with prefix caching left on was accepted. A cache hit
+              resumes its recurrent layers from a recycled block and it answers fast and wrong,
+              with no crash and nothing in the log.
+      rescue:
+        - name: Refused as expected
+          ansible.builtin.assert:
+            that: "'does not pin prefix caching off' in (ansible_failed_result | to_json)"
+            success_msg: "ok — the hybrid entry was refused with the expected reason"
+            fail_msg: >-
+              The preflight failed, but not for the expected reason. Got:
+              {{ ansible_failed_result | to_json }}

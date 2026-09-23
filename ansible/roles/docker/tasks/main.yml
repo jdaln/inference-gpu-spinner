@@ -12,6 +12,7 @@
   register: nvidia_ctk
   changed_when: false
   failed_when: false
+  when: docker_require_nvidia | default(true) | bool
 
 - name: Require the NVIDIA Container Toolkit (GPU passthrough depends on it)
   ansible.builtin.assert:
@@ -20,6 +21,7 @@
       nvidia-ctk not found — GPU passthrough to containers will fail. The UpCloud GPU
       (NVIDIA+CUDA) template should ship it. Install it and run
       `nvidia-ctk runtime configure --runtime=docker && systemctl restart docker`.
+  when: docker_require_nvidia | default(true) | bool
 
 - name: Measure /data capacity (GB) for Docker image persistence
   ansible.builtin.shell: |

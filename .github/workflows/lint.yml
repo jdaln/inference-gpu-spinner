@@ -28,7 +28,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ansible + ansible-lint
-        run: pip install ansible ansible-lint jmespath
+        # From requirements.txt, so CI installs the same pinned versions the guide documents.
+        run: pip install -r requirements.txt
       - name: Install collections
         run: ansible-galaxy collection install -r requirements.yml
       - name: ansible-lint
@@ -37,15 +38,64 @@ jobs:
         run: |
           ansible-playbook ansible/site.yml --syntax-check -e vllm_model=qwen36 -e sslip_host=example
           ansible-playbook ansible/site.yml --syntax-check -e vllm_model=qwen36 -e sslip_host=example -e multi_model_enabled=true
+          ansible-playbook ansible/prefetch.yml --syntax-check -i ansible/inventory/placeholder.ini
+      - name: the inventory directory actually parses
+        # `.ini` is in Ansible's default ignore list, so a directory inventory of .ini files
+        # resolves to nothing and every play then matches no hosts while exiting 0. Only
+        # placeholder.ini is committed, and an empty group is reported under all.children rather
+        # than as a top-level key — check there, so this passes with or without a live hosts.ini.
+        run: |
+          ansible-inventory -i ansible/inventory --list > /tmp/inv.json
+          jq -e '(.all.children // []) | index("gpu")' /tmp/inv.json > /dev/null
       - name: bin/spin default profile exists + every profile renders
         run: |
-          default=$(sed -n 's/.*VLLM_MODEL:-\([a-z0-9-]*\).*/\1/p' bin/spin | head -1)
+          default=$(sed -n 's/.*VLLM_MODEL:-\([a-z0-9-]*\).*/\1/p' bin/spin bin/lib/*.sh | head -1)
           echo "bin/spin default profile: $default"
           test -f "ansible/models/$default.yml" || { echo "::error::bin/spin defaults to missing profile '$default'"; exit 1; }
           for f in ansible/models/*.yml; do
             ansible-playbook tests/render-profile.yml -e "profile=$(basename "$f" .yml)" >/dev/null || { echo "::error::profile $f fails to render"; exit 1; }
             echo "rendered: $f"
           done
+      - name: every profile's plan is a real UpCloud plan
+        # bin/spin deploys min_plan / swap_plan when --plan is omitted, so a typo here reaches
+        # `tofu apply` on a paid resource instead of just printing a wrong message.
+        run: |
+          rc=0
+          check() {   # check <file> <key>
+            plan=$(sed -n "s/^$2: *\"\{0,1\}\([A-Za-z0-9-]*\)\"\{0,1\}.*/\1/p" "$1" | head -1)
+            [ -n "$plan" ] || return 0   # absent is allowed: bin/spin falls through to the default
+            if ! grep -qE "^${plan}[[:space:]]" tests/plans.txt; then
+              echo "::error file=$1::$2 '$plan' is not listed in tests/plans.txt"; rc=1
+            else
+              echo "$(basename "$1") -> $plan"
+            fi
+          }
+          for f in ansible/models/*.yml; do check "$f" min_plan; done
+          for f in ansible/swap-profiles/*.yml; do check "$f" swap_plan; done
+          exit $rc
+
+      - name: the plan cost gate behaves
+        # Replaced the per-profile requires_review flag, which had its own regression test.
+        run: tests/check-cost-gate.sh
+
+      - name: hybrid profiles keep prefix caching off
+        # Measured 2026-09-22: with prefix caching on, a KDA/GatedDeltaNet checkpoint answers fast
+        # and wrong on a cached long prefix, with no crash and nothing in the log (vllm#56960).
+        # Nothing else in CI would notice the flag being deleted.
+        run: tests/check-prefix-caching.sh
+
+      - name: tests/plans.txt still matches UpCloud's live plan listing
+        # The check above only proves the repo agrees with itself. This one asks the provider.
+        # Skips cleanly when the secret is absent, so forks and PRs from forks still pass.
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_TOKEN }}
+        run: tests/check-plans.sh
+
+      - name: llama-swap refuses presets it cannot serve faithfully
+        # The backend command carries no per-model env and no plugin mounts, so such a profile would
+        # start and serve silently-wrong output. Proves the refusal, not just the happy path.
+        run: ansible-playbook tests/swap-refusals.yml
+
       - name: every swap preset resolves + renders (llama-swap)
         run: |
           for f in ansible/swap-profiles/*.yml; do
@@ -54,11 +104,23 @@ jobs:
             echo "rendered swap: $f"
           done
 
+  vllm-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: every profile matches the vLLM build its image pins
+        # Reads vLLM's source at the ref each pinned image corresponds to and checks the
+        # checkpoint's architecture, the named parsers and every CLI flag. Catches the mistakes
+        # the render tests cannot: a flag that does not exist, a parser that is not registered,
+        # or an architecture the pinned release predates.
+        run: python3 tests/check-vllm-compat.py
+
   shell:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: bash syntax check
-        run: bash -n bin/spin
+        run: for f in bin/spin bin/lib/*.sh; do bash -n "$f"; done
       - name: shellcheck
-        run: shellcheck bin/spin   # ubuntu-latest ships shellcheck
+        # -x follows the `. bin/lib/*.sh` sources, so the CLI is checked as one unit.
+        run: shellcheck -x bin/spin   # ubuntu-latest ships shellcheck

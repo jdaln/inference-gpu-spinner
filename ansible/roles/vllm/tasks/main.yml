@@ -14,14 +14,11 @@
 - name: Load the selected model profile
   ansible.builtin.include_vars: "{{ playbook_dir }}/models/{{ vllm_model }}.yml"
 
-- name: Guard against an unvalidated (too-large) model profile
-  ansible.builtin.assert:
-    that: not (requires_review | default(false) | bool) or (allow_unvalidated_model | default(false) | bool)
-    fail_msg: >-
-      Model profile '{{ vllm_model }}' is marked requires_review — its floor is
-      {{ min_plan | default('a multi-GPU plan') }}, larger than the default
-      GPU-8xCPU-64GB-1xL40S. Choose an appropriate --plan and re-run with
-      --allow-unvalidated (or -e allow_unvalidated_model=true).
+# NOTE: the `requires_review` gate that used to live here was retired 2026-09-21. It meant "this
+# needs an expensive plan, confirm", but it read as "this is unvalidated", and its override
+# (allow_unvalidated_model) also switched off every check below. Cost is now gated where cost is
+# known — bin/spin compares the resolved plan against MAX_EUR_PER_HOUR using tests/plans.txt,
+# before anything is provisioned. `validated:` remains the honest validation-status flag.
 
 - name: Preflight — this GPU has enough VRAM for the selected model profile
   ansible.builtin.assert:
@@ -34,6 +31,82 @@
       is {{ min_plan | default('an L40S or larger') }}) or override with -e allow_unvalidated_model=true.
       (Running anyway would OOM at vLLM start on a GPU you are already paying for.)
 
+# VRAM is not enough on its own: an RTX PRO 6000 (96 GB, cc 12.0) and a B200 (192 GB, cc 10.0) are
+# both Blackwell, but NVFP4 kernels are not equally usable on both. Profiles set
+# min_compute_capability for the generation they need, and list capabilities the kernels mis-handle
+# in unsupported_compute_capabilities.
+- name: Preflight — this GPU generation is new enough for the selected model profile
+  ansible.builtin.assert:
+    that:
+      - (gpu_compute_cap is not defined) or (allow_unvalidated_model | default(false) | bool) or
+        ((gpu_compute_cap | float) >= (min_compute_capability | default(0) | float))
+    fail_msg: >-
+      Model '{{ vllm_model }}' needs compute capability
+      {{ min_compute_capability | default('?') }} or newer, but this GPU
+      ({{ gpu_name | default('?') }}) reports {{ gpu_compute_cap | default('?') }}. Pick a plan with
+      a newer GPU (this profile's floor is {{ min_plan | default('a newer tier') }}) or override with
+      -e allow_unvalidated_model=true.
+
+- name: Preflight — this GPU generation is not on the profile's known-bad list
+  ansible.builtin.assert:
+    that:
+      - (gpu_compute_cap is not defined) or (allow_unvalidated_model | default(false) | bool) or
+        ((gpu_compute_cap | float) not in
+         (unsupported_compute_capabilities | default([]) | map('float') | list))
+    fail_msg: >-
+      Model '{{ vllm_model }}' does not run correctly on compute capability
+      {{ gpu_compute_cap | default('?') }} ({{ gpu_name | default('?') }}) —
+      {{ unsupported_reason | default('its kernels are known to fail or return wrong output on this
+      GPU family') }}. Pick a plan this profile supports (floor:
+      {{ min_plan | default('see the profile') }}) or override with -e allow_unvalidated_model=true.
+
+# tensor_parallel_size larger than the GPU count fails deep inside the engine after the weights
+# have already downloaded; catch it before anything is paid for.
+- name: Preflight — the plan has enough GPUs for this profile's tensor-parallel size
+  ansible.builtin.assert:
+    that:
+      - (gpu_count is not defined) or
+        ((gpu_count | int) >= (tensor_parallel_size | default(1) | int))
+    fail_msg: >-
+      Model '{{ vllm_model }}' runs at tensor-parallel size
+      {{ tensor_parallel_size | default(1) }} but this server has {{ gpu_count | default('?') }} GPU(s).
+      Pick a multi-GPU plan (this profile's floor is {{ min_plan | default('a multi-GPU plan') }}).
+
+# Some images are built against a newer CUDA than the shared pin and need a newer host driver. The
+# UpCloud template ships whatever it ships, so check before the container fails with a CUDA error
+# that does not name the real cause.
+- name: Preflight — the host driver is new enough for this profile's image
+  ansible.builtin.assert:
+    that:
+      - (gpu_driver_major is not defined) or (allow_unvalidated_model | default(false) | bool) or
+        ((gpu_driver_major | int) >= (min_driver_major | default(0) | int))
+    fail_msg: >-
+      Model '{{ vllm_model }}' needs NVIDIA driver {{ min_driver_major | default('?') }} or newer
+      (its image is a newer CUDA build), but this host reports {{ gpu_driver_major | default('?') }}.
+      The UpCloud GPU template decides the driver, so this needs a template that ships a newer one.
+
+# Untested and unsupported are separate states: an unmeasured model or GPU deploys with a warning,
+# so the operator knows the run is evidence for docs/validation.md. Unsupported combinations fail
+# the asserts above instead.
+- name: Warn when this profile has no live run on this account yet
+  ansible.builtin.debug:
+    msg: >-
+      UNTESTED MODEL — '{{ vllm_model }}' has no recorded live run. Treat this deployment as a
+      validation run: capture `bin/spin validate` and `bin/spin soak` output and add the row to
+      docs/validation.md.
+  when: not (validated | default(true) | bool)
+
+- name: Warn when this GPU generation has no live run for this profile yet
+  ansible.builtin.debug:
+    msg: >-
+      UNTESTED GPU — '{{ vllm_model }}' has a live run on {{ min_plan | default('another tier') }}
+      only. This server is {{ gpu_name | default('an unmeasured GPU') }} (compute capability
+      {{ gpu_compute_cap | default('?') }}). It should run; the numbers in docs/validation.md come
+      from other hardware. Record what you measure here.
+  when:
+    - gpu_compute_cap is defined
+    - (gpu_compute_cap | float) in (untested_compute_capabilities | default([]) | map('float') | list)
+
 - name: Require HF_TOKEN for a gated model profile (fail clearly, not a mid-deploy 401)
   ansible.builtin.assert:
     that: not (gated | default(false) | bool) or ((hf_token | default('') | length) > 0)
@@ -42,6 +115,81 @@
       download would 401. Set HF_TOKEN in your environment (.env) and accept the model's license on
       Hugging Face, then re-run. (All current profiles are ungated; check a repo's gate with
       `curl https://huggingface.co/api/models/<repo> | jq .gated`.)
+
+# Disk space is the common failure that used to have no machine check: profiles stated their
+# download size in a comment that nothing read, so an under-sized WEIGHTS_SIZE_GB surfaced as
+# "No space left on device" 20 to 120 minutes into a pull, on a GPU billed by the hour. `weights_gb`
+# in each profile is that figure, measured from the Hugging Face file listing (sum of
+# `.siblings[].size` — `usedStorage` counts every revision and reads several times too high).
+# Free space is the thing to check, since /data also carries Docker's data-root and any previously
+# cached model. Measured here rather than reused from the docker role so `--tags vllm` still checks.
+# Free space plus what this model already occupies. A cache filled ahead of time (bin/spin
+# prefetch) means the pull is already paid for, so comparing free space alone to min_disk_gb
+# refuses a deploy with nothing left to download — glm53-flash-nvfp4 asks for 250 GB and its
+# weights are 181 GB of that.
+# Measure with `du -L`: it follows the symlinks into huggingface_hub's shared blob store and dedups
+# by inode, giving 22G/182G/18G against an expected 22/181/18 (2026-09-20). Plain `du` reads the
+# symlinks themselves (1 GB for a 22 GB model) and `find -L` double-counts blobs/ and snapshots/
+# (43 GB for that same model). ansible/prefetch.yml relies on the same measurement.
+- name: Measure free space and this model's existing cache
+  ansible.builtin.shell: |
+    set -o pipefail
+    df -BG --output=avail {{ data_root | quote }} | tail -1 | tr -dc '0-9'
+    printf ' '
+    du -sBG -L {{ (hf_cache_dir ~ '/hub/models--' ~ (model_repo | replace('/', '--'))) | quote }} \
+      2>/dev/null | cut -f1 | tr -dc '0-9' || printf 0
+  args:
+    executable: /bin/bash
+  register: data_space
+  changed_when: false
+  failed_when: (data_space.stdout | trim | length) == 0
+
+# This checks what a deploy needs — the weights still missing, plus room for the image — which is a
+# different question from `min_disk_gb`. That key is the size to provision for a cold start,
+# (weights_gb + 80) / 0.934: 80 GB of headroom for the image and Docker's data-root, divided by
+# what ext4 leaves usable after its 5% root reserve.
+#
+# Measured live 2026-09-20: qwen38-flash-next has min_disk_gb 300, its 173 GB of weights were
+# already prefetched, and 72 GB was free — enough for its ~30 GB image several times over. The
+# earlier form of this check (free + cached >= min_disk_gb) refused it, because the profile's 300
+# is a floor chosen for a disk that also has to hold other things. Requiring cold-start headroom
+# on a warm cache blocks exactly the workflow `bin/spin prefetch` exists to enable.
+- name: Preflight — the weights disk has room for this profile
+  vars:
+    _free: "{{ (data_space.stdout.split() | first) | int }}"
+    _cached: "{{ (data_space.stdout.split() | last) | int }}"
+    # 60 GB covers the largest image here unpacked (~35 GB) plus working room. Nothing in this
+    # repo needs more at deploy time once the weights are down.
+    _still_to_pull: "{{ [0, (weights_gb | default(0) | int) - (_cached | int)] | max }}"
+    _need_free: "{{ (_still_to_pull | int) + 60 }}"
+  ansible.builtin.assert:
+    that:
+      - (weights_gb is not defined) or
+        (allow_unvalidated_model | default(false) | bool) or
+        ((_free | int) >= (_need_free | int))
+    fail_msg: >-
+      Model '{{ vllm_model }}' needs {{ _need_free }} GB free on {{ data_root }}
+      ({{ _still_to_pull }} GB of weights still to pull, plus 60 GB for the container image and
+      working room) but only {{ _free }} GB is free. The download would die part-way with
+      "No space left on device" on a GPU you are paying for by the hour.
+      Either pull the weights ahead of time on a cheap box (`bin/spin prefetch {{ vllm_model }}`),
+      grow the disk (set WEIGHTS_SIZE_GB={{ (min_disk_gb | default(0) | int) + 50 }} and re-run
+      `bin/spin persistent-init` — UpCloud can grow a disk but never shrink it), or free space:
+      `bin/spin ssh 'du -sh -L {{ data_root }}/hf-cache/hub/models--*'` then rm -rf one you no
+      longer need.
+    success_msg: >-
+      {{ _free }} GB free on {{ data_root }}; '{{ vllm_model }}' needs {{ _need_free }} GB
+      ({{ _cached }} of {{ weights_gb | default('?') }} GB of weights already cached)
+
+- name: Warn when the weights disk has little headroom left
+  ansible.builtin.debug:
+    msg: >-
+      Only {{ (data_space.stdout.split() | first) | int }} GB free on {{ data_root }}. The deploy
+      fits, but there is little room for another model's weights or a second container image —
+      check `du -sh {{ data_root }}/hf-cache/hub/models--*` before the next deploy.
+  when:
+    - min_disk_gb is defined
+    - ((data_space.stdout.split() | first) | int) < 60
 
 - name: Require the sslip hostname (bin/spin passes it from the tofu output)
   ansible.builtin.assert:
@@ -56,7 +204,7 @@
       - acme_email | default('') | length > 0
       - "'@' in (acme_email | default(''))"
       # Let's Encrypt REJECTS placeholder domains (example.com/org/net, .invalid, .local, .test) as
-      # a forbidden contact — Caddy then never gets a cert and HTTPS silently fails AFTER a full
+      # a forbidden contact — Caddy then never gets a cert and HTTPS silently fails after a full
       # deploy. Catch it upfront (learned live 2026-07-05: gpu-spinner@example.com blocked the cert).
       - not (acme_email | default('') | lower | regex_search('@(example\.(com|org|net)|[^@]*\.(invalid|local|test))$'))
       - vllm_api_key | default('') | length > 0
@@ -64,6 +212,12 @@
       ACME_EMAIL must be a REAL deliverable address and VLLM_API_KEY must be set (see .env.example).
       Let's Encrypt refuses placeholder domains like example.com/.local/.test, so Caddy would never
       obtain a TLS cert. Current ACME_EMAIL='{{ acme_email | default('') }}'.
+
+# Built before the compose render, which needs the paths they produce, and after the preflights, so
+# a profile that cannot run on this GPU fails before anything is cloned or compiled.
+- name: Build any out-of-tree vLLM plugins this profile pins
+  ansible.builtin.include_tasks: plugins.yml
+  when: (vllm_plugins | default([])) | length > 0
 
 - name: Ensure the compose directory exists
   ansible.builtin.file:

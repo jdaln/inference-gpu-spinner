@@ -1,0 +1,108 @@
+---
+# Qwen3.8-Flash-Next in FP8 (official Qwen block-scaled build, ~186 GB on disk / 172.78 GiB loaded).
+# Qwen4 architecture preview: ultra-sparse MoE, 125B parameters with 6B active per token, plus a
+# separate 51B N-gram embedding table and a 4B MTP head. 48 layers as
+# 12 x (3 x (Gated DeltaNet -> MoE) -> 1 x (Qwen Sparse Attention -> MoE)), 512 experts with 10
+# routed + 1 shared active. Native 262,144 context, 1M with YaRN. Multimodal.
+#
+# PINNED IMAGE (required): the recipe states that PyPI installation is not supported for this model
+# and that the dedicated vllm/vllm-openai:qwen38-flash-next build must be used. The shared image pin
+# does not carry the qwen4_exp architecture.
+#
+# WHY 4x RTX PRO 6000. recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next verified 4x H100 at ~1,430 output
+# tok/s (concurrency 64, 1024-in/256-out), sold here as GPU-48xCPU-960GB-4xH100 at ~7.16 EUR/h.
+# GPU-64xCPU-320GB-4xRTXPRO6000 is 6.60 EUR/h for 96 GB cards instead of 80, so it is the default
+# lane; the H100 tier is a one-flag fallback (--plan GPU-48xCPU-960GB-4xH100) and the only one with
+# measured numbers behind it.
+#
+# TWO FLAGS BELOW, both of which stay on this lane:
+#   VLLM_PLE_CPU_OFFLOAD=1  — the 51B N-gram table is replicated per rank, not sharded, so it fits
+#                             neither an 80 GB H100 nor a 96 GB card: 95 x 0.85 = 80.75 GB per rank
+#                             against ~51 GB of table plus ~33.6 GB of sharded weights. Offloaded,
+#                             the table sits in host RAM (320 GB here, ~51 GB needed) with rows
+#                             prefetched asynchronously, leaving ~47 GB per rank for KV. Optional
+#                             from 141 GB (H200) up.
+#   --moe-backend triton    — the recipe's Hopper MoE backend. It works on every generation, and
+#                             dropping it on RTX Blackwell is a measurement nobody has taken. Try
+#                             that once a clean run exists to compare against.
+#
+# NO NVLINK on the RTX PRO 6000 plans: TP=4 runs over PCIe. If engine init hangs inside NCCL rather
+# than failing, add NCCL_P2P_DISABLE: 1 to extra_env. Qwen Sparse Attention sidesteps the SM120
+# sparse-MLA gap that blocks the GLM and DeepSeek profiles — vllm-project/vllm#55430 is a prefill
+# tuning PR enabled on SM121 only.
+#
+# OTHER TOPOLOGIES. TP2 is the minimum validated FP8 deployment (on GB300), TP4 the recommended full
+# tray. On eight GPUs use TEP8 (TP8 plus --enable-expert-parallel); plain TP8 is incompatible with
+# this checkpoint's 128-wide quantization blocks. --enable-expert-parallel helps TP4 too.
+#
+# MTP: the checkpoint carries a Multi-Token Prediction head, left off because the recipe measured it
+# making throughput worse at every concurrency on 4x H100 (8-36% lower request throughput, 32-173%
+# higher per-token latency, ~36% acceptance). Verify before enabling on other hardware:
+#   extra_vllm_args += ["--speculative-config", '{"method":"mtp","num_speculative_tokens":3}']
+#
+# Leave --max-num-seqs at 256: lowering it triggers a Mamba-cache capacity error at startup.
+# --gpu-memory-utilization 0.85 is the verified H100 value (the recipe advises 0.90 for large
+# multimodal batches). --tool-call-parser is qwen3_coder here, the qwen3_xml one belongs to
+# Qwen3.8-27B. --reasoning-parser qwen3 is required: the chat template opens every turn with
+# <think>.
+#
+# max_model_len 262144 is the native limit. Startup and bounded evaluation were validated there; a
+# single full-length 262K request was not tested upstream.
+#
+# DISK: ~186 GB against a default 150 GB /data. Raise WEIGHTS_SIZE_GB (e.g. 300) and re-run
+# bin/spin persistent-init before the first pull, or the download dies with "No space left on
+# device".
+#
+# An NVFP4 build exists (nvidia/Qwen3.8-Flash-Next-NVFP4, ~133 GB) and is not offered here: the
+# recipe covers only FP8 and BF16, the dedicated image has no published NVFP4 run for this
+# architecture, and NVFP4 MoE would be B200-only anyway.
+model_repo: "Qwen/Qwen3.8-Flash-Next-FP8"
+served_name: "qwen3.8-flash-next"
+vllm_image_override: "vllm/vllm-openai:qwen38-flash-next"
+tensor_parallel_size: 4
+max_model_len: 262144
+gpu_memory_utilization: 0.85
+dtype: "auto"
+enable_lora: false
+# CAP_SYS_PTRACE is not optional for this profile. VLLM_PLE_CPU_OFFLOAD spawns a PLE offload
+# worker that hands CUDA tensors to the TP workers over CUDA IPC, and that calls pidfd_getfd(2).
+# Docker's default seccomp profile gates that syscall behind CAP_SYS_PTRACE and returns EPERM
+# without it, so engine init fails at worker registration with
+#   RuntimeError: pidfd_getfd: Operation not permitted   (torch reductions.rebuild_cuda_tensor)
+# after the checkpoint has already loaded — about 8 minutes into a 4-GPU start. Measured live
+# 2026-09-20 on 4x RTX PRO 6000. Narrower than seccomp=unconfined or pid=host.
+cap_add:
+  - SYS_PTRACE
+extra_env:
+  VLLM_PLE_CPU_OFFLOAD: 1
+extra_vllm_args:
+  - "--moe-backend"
+  - "triton"
+  - "--max-num-seqs=256"
+  # Prefix caching stays on, reviewed 2026-09-22. This is a hybrid checkpoint, the class where a
+  # cache hit can answer fast and wrong (see docs/gpu-spinner.md, "Hybrid checkpoints and prefix
+  # caching"), but this
+  # profile's ceiling rungs are counter-evidence: 65,429 / 130,803 / 259,512 prompt_tokens all
+  # passed with the flag set, under the pre-2026-09-22 soak that reused one haystack per context, so
+  # they ran with cache hits and still retrieved correctly. A cache hit answers wrongly, so a pass
+  # cannot be an artefact of one. Re-test before changing it.
+  - "--enable-prefix-caching"
+  - "--no-enable-flashinfer-autotune"
+  - "--reasoning-parser"
+  - "qwen3"
+  - "--tool-call-parser"
+  - "qwen3_coder"
+  - "--enable-auto-tool-choice"
+min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
+min_vram_gb: 76                  # per-GPU floor: ~43 GiB per rank at TP=4; keeps both 4xH100 and 4xRTXPRO6000
+min_disk_gb: 300   # disk size to provision: (weights_gb + 80) / 0.934; raised to this profile's stated floor
+weights_gb: 173   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+validated: true    # live run 2026-09-20 on 4x RTX PRO 6000 (spot) — see docs/validation.md
+# MEASURED 2026-09-20 on GPU-SPOT-64xCPU-320GB-4xRTXPRO6000 (driver 595.58.03, cc 12.0):
+#   KV pool 3,640,845 tokens · 13.89x concurrency at 262,144 · ~85,340/97,887 MiB per card
+#   TRITON Fp8 MoE · model load 32.72 GiB/rank in ~29 s · engine init 110.7 s
+#   soak 3x20 @32768: factual 6/6, 60/60 needles, 0 wrong/rejected/timed-out, p50 20.8 s
+#   ceiling: 65,429 / 130,803 / 259,512 prompt_tokens all PASS — 262144 is measured, not the recipe.
+# NCCL over PCIe came up first try on this 4-GPU plan; NCCL_P2P_DISABLE was not needed.                 # newly added — no live run on this account yet
+untested_compute_capabilities: [12.0]   # RTX PRO 6000 is now the default lane; nothing measured there
+health_wait_retries: 200         # x10s = 33 min — ~186 GB download, TP=4 init, N-gram table offload

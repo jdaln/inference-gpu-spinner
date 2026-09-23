@@ -14,7 +14,8 @@ tensor_parallel_size: 1
 #   --max-num-seqs 16            : bound concurrency -> bounded KV/scheduler memory
 #   --enforce-eager              : skip cudagraph capture for headroom + faster start
 # FP8 quantization is auto-detected from the checkpoint config. For more throughput on a
-# larger GPU (e.g. H100 80 GB), drop --enforce-eager and raise max-model-len / batched-tokens.
+# larger GPU (H100 80 GB, or 1x RTX PRO 6000 96 GB at 1.65 EUR/h), drop --enforce-eager and raise
+# max-model-len / batched-tokens — the L40S-specific caps above exist only to fit 48 GB.
 max_model_len: 262144
 gpu_memory_utilization: 0.90
 dtype: "auto"
@@ -22,6 +23,14 @@ enable_lora: false
 extra_vllm_args:
   - "--language-model-only"
   - "--reasoning-parser=qwen3"
+  # Prefix caching stays on, reviewed 2026-09-22. This is a hybrid checkpoint, the class where a
+  # cache hit can answer fast and wrong (see docs/gpu-spinner.md, "Hybrid checkpoints and prefix
+  # caching") — but qwen38 and
+  # qwen38-flash-next both hold graded long-context passes with caching on, so the Qwen hybrids have
+  # counter-evidence. This profile has none of its own: its row predates the graded soak. Being the
+  # repo default on the cheapest lane, it is the first thing to re-measure on the next GPU:
+  #   bin/spin soak --rounds 1 --concurrency 3 --context 262144
+  # A wrong needle there with RestartCount unmoved means flip this flag.
   - "--enable-prefix-caching"
   - "--enforce-eager"
   - "--max-num-batched-tokens=2048"
@@ -31,5 +40,8 @@ extra_vllm_args:
   - "--kv-cache-dtype"
   - "fp8"
 min_plan: "GPU-8xCPU-64GB-1xL40S"
+untested_compute_capabilities: [12.0]   # also fits RTX PRO 6000 / H100; only L40S is measured
 # Preflight floor (GB): an L40S reports ~44 GB. 40 blocks an accidental L4 run (which would OOM).
 min_vram_gb: 40
+min_disk_gb: 120   # disk size to provision: (weights_gb + 80) / 0.934
+weights_gb: 29   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)

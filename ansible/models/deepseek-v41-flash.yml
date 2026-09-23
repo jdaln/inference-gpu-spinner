@@ -1,0 +1,91 @@
+---
+# DeepSeek-V4.1-Flash — vision-language MoE, 552B backbone + 196B Engram memory, 8B active per
+# prompt token and 16B per output token. 40 layers at hidden 5120, split into a 20-layer encoder and
+# a 20-layer decoder (prefill runs only the encoder half), with a 32-layer ViT and aligner in front.
+# Two-tier sparse attention with a V3.2-style indexer, Hyper-Connections, and a fused DSpark draft
+# head. Routing is 6 of 384 experts plus one shared, with a separate routing bias for image spans.
+# 1,048,576 context via YaRN factor 16 over a 65,536-token training window.
+#
+# PINNED IMAGE (required): no pip wheel serves this architecture. It landed on vLLM main in
+# vllm-project/vllm#56228, so any nightly from 2026-09-10 carries it; v0.29.0 predates it. The tag
+# below is an immutable dated nightly, not the floating :nightly, so a spin-up two weeks from now
+# gets the same engine. Replace it with a v0.30.0 release tag once one exists.
+#
+# MEMORY. ~511 GB on disk (476 GiB) against the recipe's 614 GB VRAM floor — one GB200 NVL4 tray at
+# TP4, which 4x B200 (768 GB) matches here. The Engram tables alone are 196.6B parameters (~183 GiB)
+# and dominate everything but the experts, so weights and batch size set the capacity limit before
+# KV does.
+#
+# B200 FOR NOW, and the closest DeepSeek profile to an RTX PRO 6000 lane: 8x RTX PRO 6000 is 760 GB
+# against the 614 GB floor at 13.20 EUR/h versus 18.00, so the lane would be TP=8 on
+# GPU-128xCPU-640GB-8xRTXPRO6000. 4x RTX PRO 6000 (380 GB) does not fit.
+#
+# WHAT BLOCKS IT: sparse attention. vllm-project/vllm#55757 reports DeepSeek-style sparse MLA
+# unservable on sm_120 — it passes a short-prompt smoke test and fails at realistic lengths. The
+# MXFP4 experts are clear: cu130 fixes the grouped block-scaled GEMM fault, and much of the "4-bit
+# MoE returns garbage" history traces to vllm-project/vllm#54189, an uninitialised activation scale
+# zeroing every expert.
+#
+# WHEN TO OPEN THE LANE. vllm-project/vllm#54929 covers this model's geometry (512 NoPE + 64 RoPE =
+# 576 head layout) and, unlike #41834, is a small mergeable PR (12 files, mergeable 2026-09-19).
+# When it lands in a release image: drop unsupported_compute_capabilities, set
+# tensor_parallel_size 8, min_plan GPU-128xCPU-640GB-8xRTXPRO6000, min_vram_gb 90. The overlay route
+# in glm53-flash-nvfp4.yml is NoPE-specific and will not serve this geometry.
+#
+# --language-model-only skips the vision encoder, freeing its VRAM for KV; the verified GB200 runs
+# (TP4 and 1P1D) were text-only, so that is what this profile reproduces. For image input, remove it
+# and consider --mm-encoder-tp-mode data: at 32 layers and hidden 1024 the ViT is small enough that
+# tensor-parallel communication costs more than it saves.
+#
+# --tokenizer-mode / --reasoning-parser / --tool-call-parser are all deepseek_v41, not deepseek_v4.
+#
+# REASONING is on by default at effort 50. Callers set chat_template_kwargs: thinking (bool) and
+# reasoning_effort — low (25), high (50), xhigh (75), max (100) or an integer 1-100. The DeepSeek
+# API maps low/high/max to 50/75/100 while vLLM maps low/high/xhigh/max to 25/50/75/100, so pass an
+# integer if you need parity.
+#
+# DSpark: the fused draft head adds roughly 14B parameters to the load. Left off so the first
+# validation run tests the model alone. Enable with:
+#   extra_vllm_args += ["--speculative-config",
+#     '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}']
+#
+# DISK: ~511 GB against a default 150 GB /data. Set WEIGHTS_SIZE_GB to at least 600 and re-run
+# bin/spin persistent-init before the first pull. At MaxIOPS that is ~EUR 132/mo while the disk
+# exists — bin/spin down removes it by default, at the cost of a fresh ~70 min pull.
+model_repo: "deepseek-ai/DeepSeek-V4.1-Flash"
+served_name: "deepseek-v41-flash"
+vllm_image_override: "vllm/vllm-openai:cu129-nightly-cd10ed6f9f6b37a8ace9cf380007e66fe12ec0c3"
+tensor_parallel_size: 4
+max_model_len: 1048576
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_env:
+  # First load is very long: weights, Engram tables and CUDA graph capture. The engine's own
+  # readiness timeout has to outlast it or vLLM aborts before it ever serves.
+  VLLM_ENGINE_READY_TIMEOUT_S: 3600
+extra_vllm_args:
+  - "--language-model-only"
+  - "--tokenizer-mode"
+  - "deepseek_v41"
+  - "--reasoning-parser"
+  - "deepseek_v41"
+  - "--tool-call-parser"
+  - "deepseek_v41"
+  - "--enable-auto-tool-choice"
+  - "--max-num-seqs=128"
+  - "--max-num-batched-tokens=16384"
+  # Covers expected decode batches including DSpark draft tokens: 128 * (1 + 5) = 768, rounded up.
+  - "--max-cudagraph-capture-size=1024"
+min_plan: "GPU-96xCPU-960GB-4xB200"
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); 614 GB total across TP=4
+min_disk_gb: 600   # disk size to provision: (weights_gb + 80) / 0.934
+weights_gb: 475   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+min_compute_capability: 10.0
+unsupported_compute_capabilities: [12.0]
+unsupported_reason: >-
+  DeepSeek-style sparse MLA has no working attention path on RTX Blackwell (cc 12.0) —
+  vllm-project/vllm#55757, where a short-prompt smoke test passes and realistic prompts fail.
+  vllm-project/vllm#54929 is the open fix for this geometry; see the note at the top of this profile
+validated: false     # newly added — no live run on this account yet
+health_wait_retries: 600   # x10s = 100 min — ~511 GB to pull, then TP=4 init and graph capture

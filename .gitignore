@@ -21,6 +21,9 @@ override.tf.json
 *_override.tf.json
 # NOTE: .terraform.lock.hcl is intentionally NOT ignored (commit it for reproducible providers).
 
+# --- Tests ---
+tests/.vllm-compat-cache/
+
 # --- Ansible ---
 ansible/inventory/hosts.ini
 *.retry
@@ -38,3 +41,5 @@ __pycache__/
 *~
 TODO.txt
 plan.md
+
+ansible/models/custom_model.yml

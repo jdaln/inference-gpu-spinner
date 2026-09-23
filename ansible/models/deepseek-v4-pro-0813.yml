@@ -1,0 +1,81 @@
+---
+# DeepSeek-V4-Pro-0813 — flagship of the V4 family: 1.6T total / 49B active MoE, 61 layers at hidden
+# 7168, 384 routed experts with 6 active plus one shared. Hybrid attention (Compressed Sparse +
+# Heavily Compressed) with Manifold-Constrained Hyper-Connections, reaching 27% of V3.2's per-token
+# FLOPs and 10% of its KV cache at 1M context. FP4+FP8 mixed: MoE experts FP4, attention / norm /
+# router FP8. 1,048,576 native context via YaRN. 0813 supersedes the preview and adds fused DSpark.
+#
+# THE MOST EXPENSIVE PROFILE HERE: eight GPUs and ~893 GB of weights, i.e.
+# GPU-192xCPU-1920GB-8xB200 at ~36 EUR/h — the glm52 tier, so bin/spin refuses it until you pass
+# --allow-expensive (or raise MAX_EUR_PER_HOUR). Read the disk note below before the first run; the
+# standing cost of that disk is the largest in this repo.
+#
+# PINNED IMAGE. Fused-DSpark checkpoints need vLLM 0.25.0+; the shared pin is v0.23.0, so this uses
+# v0.29.0, the newest release.
+#
+# WHY EIGHT GPUs. The recipe is explicit that the mixed-precision checkpoint does not fit one GB200
+# NVL4 tray (4 GPUs, 768 GB) and must run across eight; its recommended deployments are all 8-GPU
+# (B300, H200, MI355X). 8x B200 gives 1536 GB against ~893 GB of weights.
+#
+# TOPOLOGY. Plain TP=8, the shape the MI355X reference command and glm52 here both use. The recipe
+# recommends DP + EP (--data-parallel-size 8) for 8-GPU nodes instead; that is the change to make
+# once throughput matters more than a first successful serve.
+#
+# B200 ONLY. The FP4 MoE experts take the grouped block-scaled GEMM path that returns invalid output
+# on RTX Blackwell (cc 12.0) with a cu129 build, and an 8x RTX PRO 6000 node would be 768 GB with no
+# NVLink — too small for this checkpoint and the wrong interconnect for TP=8.
+#
+# CONTEXT. max_model_len 393216 is the documented floor for the "max" reasoning mode: below 384K
+# that mode truncates. The recipe caps 8-GPU H200 nodes at 800000 for KV headroom; 8x B200 has more
+# room, so raising toward 800000 is the first thing to try once a live run shows the KV pool. Native
+# is 1,048,576.
+#
+# REASONING: three effort levels on 0813 (low / high / max), selected per request. DeepSeek
+# recommends temperature 1.0, top_p 0.95 for agentic use and 1.0 otherwise, and up to 384K output
+# tokens.
+#
+# DSpark: the fused draft module is left off so the first validation run tests the model alone — at
+# this hourly rate a failure that could be either half is expensive. Enable with:
+#   extra_vllm_args += ["--speculative-config",
+#     '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}']
+#
+# DISK: ~893 GB of weights. Set WEIGHTS_SIZE_GB to at least 1000 and re-run bin/spin persistent-init
+# before the first pull. At MaxIOPS a 1000 GB disk is ~EUR 220/mo standing, billed whether or not a
+# GPU exists. Either budget for that or let bin/spin down decommission it each evening and accept a
+# fresh ~2 h pull.
+model_repo: "deepseek-ai/DeepSeek-V4-Pro-0813"
+served_name: "deepseek-v4-pro-0813"
+vllm_image_override: "vllm/vllm-openai:v0.29.0-cu129-ubuntu2404"
+tensor_parallel_size: 8
+max_model_len: 393216
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_env:
+  # Pulling and loading ~893 GB takes hours; the engine's readiness timeout has to outlast it.
+  VLLM_ENGINE_READY_TIMEOUT_S: 7200
+extra_vllm_args:
+  - "--trust-remote-code"
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--tokenizer-mode"
+  - "deepseek_v4"
+  - "--reasoning-parser"
+  - "deepseek_v4"
+  - "--tool-call-parser"
+  - "deepseek_v4"
+  - "--enable-auto-tool-choice"
+  - "--max-num-seqs=512"
+  - "--max-num-batched-tokens=8192"
+min_plan: "GPU-192xCPU-1920GB-8xB200"
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~893 GB of weights across TP=8
+min_disk_gb: 1000   # disk size to provision: (weights_gb + 80) / 0.934; raised to this profile's stated floor
+weights_gb: 831   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+min_compute_capability: 10.0
+unsupported_compute_capabilities: [12.0]
+unsupported_reason: >-
+  size decides this one regardless of kernels: ~893 GB of weights against 768 GB on an 8x RTX PRO
+  6000 node, which is also PCIe-only with no NVLink for TP=8. DeepSeek-style sparse MLA has no
+  working cc 12.0 attention path either (vllm-project/vllm#55757)
+validated: false     # newly added — no live run on this account yet
+health_wait_retries: 900   # x10s = 150 min — ~893 GB to pull, then TP=8 init across eight GPUs

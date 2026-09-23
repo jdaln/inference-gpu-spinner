@@ -1,0 +1,206 @@
+---
+# Fill the persistent weights disk from a cheap CPU box, before any GPU exists.
+#
+# Why: a weights download is billed at whatever compute is attached to the disk, and it is the
+# largest single line item in a validation campaign. 354 GB at ~126 MB/s is ~47 minutes: 5.17 EUR
+# on 4x RTX PRO 6000 (6.60/h), or 0.035 EUR on 2xCPU-4GB (0.0446/h). Nothing about a download is
+# GPU work. The GPU box then starts warm and spends its expensive minutes on inference.
+#
+# Run by `bin/spin prefetch <profile>...`, which provisions terraform/prefetch, runs this, and
+# destroys the box. An UpCloud storage device attaches to one server at a time, so this can never
+# run alongside a GPU server — bin/spin refuses rather than letting tofu discover it.
+- name: Prefetch model weights and container images onto the persistent disk
+  hosts: prefetch
+  become: true
+  gather_facts: true
+  vars:
+    # No GPU here; the docker role's nvidia-ctk assert would fail on an otherwise healthy box.
+    docker_require_nvidia: false
+    prefetch_models: []
+  tasks:
+    - name: Require a list of profiles to fetch
+      ansible.builtin.assert:
+        that: (prefetch_models | default([])) | length > 0
+        fail_msg: "Nothing to prefetch. Pass -e '{\"prefetch_models\":[\"qwen38\",...]}' (bin/spin prefetch does this)."
+
+    - name: Mount and grow the persistent weights disk
+      ansible.builtin.import_tasks: roles/gpu/tasks/mount_data.yml
+
+    # Image prefetch is optional and best-effort. The docker role is verification-first — it
+    # assumes the UpCloud GPU template's preinstalled Docker — and this box runs plain Ubuntu, so
+    # Docker is usually absent. Installing a second Docker here is not worth it: it would write the
+    # shared /data data-root with a different build from the one the GPU box runs, and a data-root
+    # the GPU box cannot read costs far more than the ~EUR 0.65 of image pulls it would save.
+    # Weights are 560 GB and the whole point; images are ~74 GB and pull fine at GPU rate.
+    - name: Check whether Docker is available (image prefetch is optional)
+      ansible.builtin.command: docker info
+      register: pf_docker
+      changed_when: false
+      failed_when: false
+
+    - name: Set up Docker's data-root on the persistent disk (only if Docker is already present)
+      ansible.builtin.include_role:
+        name: docker
+      when: pf_docker.rc == 0
+
+    - name: Note that images are not being prefetched
+      ansible.builtin.debug:
+        msg: >-
+          No Docker on this box, so only weights are prefetched. The GPU box
+          pulls its own image on first deploy (~5-10 min, a fraction of the weight download this
+          run is saving). To prefetch images too, give terraform/prefetch an os_template that ships
+          Docker.
+      when: pf_docker.rc != 0
+
+    - name: Load each requested profile
+      ansible.builtin.set_fact:
+        _pf: "{{ (_pf | default([])) + [lookup('ansible.builtin.file', playbook_dir ~ '/models/' ~ item ~ '.yml') | from_yaml | combine({'_name': item})] }}"
+      loop: "{{ prefetch_models }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Report what will be fetched
+      ansible.builtin.debug:
+        msg: >-
+          {{ _pf | length }} profile(s):
+          {% for p in _pf %}{{ p._name }} ({{ p.model_repo }}, needs ~{{ p.min_disk_gb | default('?') }} GB){% if not loop.last %}, {% endif %}{% endfor %}
+
+    # `du -L` follows huggingface_hub's symlinks into its shared blob store and dedups by inode.
+    # Plain `du` and `find -L` both get it wrong — see the same measurement in
+    # roles/vllm/tasks/main.yml.
+    # `du -L` follows the shared blob store and dedups by inode, so each figure is what that model
+    # already occupies rather than what the disk happens to hold.
+    #
+    # The question is how much still has to be downloaded, plus 80 GB of headroom for the container
+    # image and Docker's data-root — not how big the disk is.
+    #
+    # Count per model, not against the whole cache: a disk holding something you are not fetching
+    # otherwise reads as free space you do not have. Measured 2026-09-21 — a 500 GB disk with 364 GB
+    # of k2-horizon cached had 102 GB free, and a 181 GB model needs 261 GB; whole-cache accounting
+    # would have compared 102 + 364 against 261, passed, and died at ~102 GB.
+    - name: Measure free space and what still has to be downloaded
+      ansible.builtin.shell: |
+        set -o pipefail
+        avail=$(df -BG --output=avail {{ data_root | quote }} | tail -1 | tr -dc '0-9')
+        still=0
+        {% for m in _pf %}
+        have=$(du -sBG -L {{ (hf_cache_dir ~ '/hub/models--' ~ (m.model_repo | replace('/', '--'))) | quote }} \
+               2>/dev/null | cut -f1 | tr -dc '0-9'); have=${have:-0}
+        want={{ m.weights_gb | int }}
+        [ "$have" -lt "$want" ] && still=$(( still + want - have ))
+        {% endfor %}
+        printf '%s %s' "$avail" "$still"
+      args:
+        executable: /bin/bash
+      register: pf_space
+      changed_when: false
+
+    - name: Preflight — the disk has room for what still has to be downloaded
+      vars:
+        _free: "{{ (pf_space.stdout.split() | first) | int }}"
+        _still: "{{ (pf_space.stdout.split() | last) | int }}"
+        _need: "{{ (_still | int) + 80 }}"
+      ansible.builtin.assert:
+        that:
+          - (_free | int) >= (_need | int)
+        fail_msg: >-
+          {{ _free }} GB free on {{ data_root }}, but {{ _pf | length }} requested profile(s) still
+          need {{ _still }} GB of weights downloaded, plus 80 GB of headroom = {{ _need }} GB.
+          Grow the disk (WEIGHTS_SIZE_GB={{ ((_need | int) + (_free | int) * 0 + 40) }} or more,
+          then bin/spin persistent-init — it can grow but never shrink), fetch fewer profiles, or
+          free space: du -sh -L {{ data_root }}/hf-cache/hub/models--* then rm -rf one you no
+          longer need.
+        success_msg: >-
+          {{ _free }} GB free; {{ _still }} GB still to download for {{ _pf | length }} profile(s)
+          (+80 GB headroom = {{ _need }} GB needed)
+
+    # Plain Ubuntu has no pip. The GPU template does, which is why the rest of this repo never
+    # needed it.
+    - name: Install pip (absent on a stock Ubuntu image)
+      ansible.builtin.apt:
+        name: python3-pip
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      retries: 3
+      delay: 10
+
+    # The Xet downloader buffers chunks in RAM and was OOM-killed repeatedly on a 4 GB box with no
+    # swap (measured 2026-09-20: ~3.5 GB RSS, five of ten profiles killed with rc -9). Swap is the
+    # safety net under the bigger plan: a spike stalls instead of losing a half-finished
+    # multi-hundred-GB download.
+    - name: Create a swap file (the download is memory-hungry and the box has none)
+      ansible.builtin.shell: |
+        set -e
+        fallocate -l 8G /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+      args:
+        executable: /bin/bash
+        creates: /swapfile
+
+    - name: Install the Hugging Face CLI (with the fast transfer backend)
+      ansible.builtin.pip:
+        name:
+          - "huggingface_hub[cli,hf_transfer]"
+        state: present
+        extra_args: --break-system-packages
+      retries: 3
+      delay: 10
+
+    # hf_transfer is what turns a ~50 MB/s single-stream pull into the ~126 MB/s this repo's
+    # timings assume. HF_TOKEN is not required (every current repo is ungated) but avoids the
+    # anonymous throttle, which drops to ~50 KB/s after a few hundred GB in a day.
+    - name: Download each profile's weights to the shared HF cache
+      ansible.builtin.command:
+        cmd: "hf download {{ item.model_repo }} --quiet"
+      environment:
+        HF_HOME: "{{ hf_cache_dir }}"
+        HF_TOKEN: "{{ hf_token | default('') }}"
+        # Xet replaced hf_transfer in huggingface_hub 1.x, which now ignores
+        # HF_HUB_ENABLE_HF_TRANSFER and warns about it. Xet's concurrency drives memory, so cap it:
+        # the default of 16 concurrent range GETs exhausted a 4 GB box.
+        HF_XET_NUM_CONCURRENT_RANGE_GETS: "8"
+      loop: "{{ _pf }}"
+      loop_control:
+        label: "{{ item._name }} -> {{ item.model_repo }}"
+      register: pf_dl
+      changed_when: true
+      async: 21600     # 6 h: deepseek-v4-pro is ~831 GB
+      poll: 30
+
+    # The container image is 9-14 GB and is pulled at GPU rate today. Docker's data-root is on
+    # /data, so pulling here means the GPU box starts it from local disk.
+    # Plain `docker pull`, not community.docker: that collection is not in requirements.yml and
+    # this needs nothing it offers. `docker pull` is already idempotent — a present image reports
+    # "Image is up to date".
+    - name: Pull each profile's container image onto the shared Docker data-root
+      ansible.builtin.command:
+        cmd: "docker pull {{ item.vllm_image_override | default(vllm_image) }}"
+      loop: "{{ _pf }}"
+      loop_control:
+        label: "{{ item.vllm_image_override | default(vllm_image) }}"
+      register: pf_pull
+      changed_when: "'Image is up to date' not in pf_pull.stdout"
+      async: 3600
+      poll: 15
+      when: pf_docker.rc == 0
+
+    - name: Report what is now cached, and what is left
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "--- {{ data_root }} ---"; df -h {{ data_root }} | tail -1
+        echo "--- cached models ---";   du -sh {{ hf_cache_dir }}/hub/models--* 2>/dev/null || echo "(none)"
+        echo "--- docker images ---"
+        command -v docker >/dev/null \
+          && docker images --format '{{ "{{.Repository}}:{{.Tag}} {{.Size}}" }}' \
+          || echo "(docker not installed — images not prefetched)"
+      args:
+        executable: /bin/bash
+      register: pf_report
+      changed_when: false
+
+    - name: Prefetch summary
+      ansible.builtin.debug:
+        msg: "{{ pf_report.stdout_lines }}"

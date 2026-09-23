@@ -1,10 +1,12 @@
 ---
-# GLM-5.2 (Z.ai / zai-org) FP8 — 753B total / ~40B active MoE, text-only, 1M ctx. INTENTIONALLY kept
-# requires_review: an 8x B200 node is ~36 €/h, too expensive to validate — gated ON PURPOSE (cost),
-# not a reliability doubt. Run the validated NVFP4 path (glm52-nvfp4.yml, 4x B200 ~18 €/h) instead.
-# WARNING: FP8 weights ~756 GB fit ONLY an 8x B200 node (8x179 GB) — NOT 8x H100 (8x80 = 640 GB is
-# too small). requires_review gates it (the vllm role refuses without -e allow_unvalidated_model=true).
-# The RUNNABLE GLM path on this account is glm52-nvfp4.yml (NVFP4 on 4x B200 at half the price).
+# GLM-5.2 (Z.ai / zai-org) FP8 — 753B total / ~40B active MoE, text-only, 1M ctx.
+# INTENTIONALLY NOT VALIDATED: an 8x B200 node is ~36 EUR/h, too expensive to justify — a cost
+# decision, not a reliability doubt. Run the validated NVFP4 path instead (glm52-nvfp4.yml,
+# 4x B200 ~18 EUR/h), which is the runnable GLM-5.2 lane on this account.
+# WARNING: FP8 weights ~704 GB fit ONLY an 8x B200 node (8x179 GB) — NOT 8x H100 (8x80 = 640 GB is
+# too small), and not an 8x RTX PRO 6000 node either: 8x96 = 768 GB leaves no working headroom and
+# has no NVLink for TP=8. bin/spin refuses any plan above MAX_EUR_PER_HOUR (default 10) unless
+# --allow-expensive is passed, so this tier needs a deliberate opt-in.
 model_repo: "zai-org/GLM-5.2-FP8"
 served_name: "glm52"
 tensor_parallel_size: 8
@@ -23,5 +25,15 @@ extra_vllm_args:
   - "--kv-cache-dtype"
   - "fp8_e4m3"
 min_plan: "GPU-192xCPU-1920GB-8xB200"
-min_vram_gb: 76
-requires_review: true
+min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB). Not 76: at that value an 8x RTX PRO 6000
+                   # node (95 GB/GPU) clears the gate and then OOMs on ~704 GB of weights against a
+                   # 684 GB budget, after the whole download. The file comment above says 8x96 does
+                   # not fit; this is the check that enforces it.
+validated: false   # never run live. WITHOUT this key the vllm role defaults `validated` to true and
+                   # the "UNTESTED MODEL" warning never prints, so this profile silently claimed a
+                   # live run it has never had. Added 2026-09-20 during the RTX validation campaign.
+health_wait_retries: 800   # x10s = 133 min. 704 GB of shards at ~126 MB/s is ~93 min of download
+                           # alone, before TP=8 init. The default of 90 (15 min) gave up long before
+                           # the pull finished, on a 36 EUR/h node.
+min_disk_gb: 840   # disk size to provision: (weights_gb + 80) / 0.934
+weights_gb: 704   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)

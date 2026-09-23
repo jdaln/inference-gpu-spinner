@@ -3,7 +3,14 @@
 # {{ compose_dir }}/.env, which sets VLLM_API_KEY), so it never appears in the backend's argv /
 # `docker inspect`. Clients pick a model via the OpenAI "model" field; an idle backend is unloaded
 # after `ttl` seconds.
-healthCheckTimeout: 600
+{# A literal 600 s was shorter than most profiles' own health_wait_retries (x10 s), so llama-swap
+    gave up on a backend that was still loading and reported it as failed. Derive it from the
+    slowest entry, with a 600 s floor. #}
+{% set _hct = [600] %}
+{%- for _m in swap_models | default([]) %}
+{%- set _ = _hct.append((_m.health_wait_retries | default(90) | int) * 10) %}
+{%- endfor %}
+healthCheckTimeout: {{ _hct | max }}
 models:
 {% for m in swap_models %}
 {#- Shell-quote each vLLM arg (map('quote')) so JSON-ish args like --limit-mm-per-prompt '{"image":0}'
@@ -11,7 +18,8 @@ models:
     valid YAML (a bare double-quoted scalar would break on the '"' in the JSON arg). ${PORT} is a
     llama-swap macro and is left literal for llama-swap to expand. #}
 {% set _args = (m.args | default([]) | map('quote') | join(' ')) %}
-{% set _cmd = "docker run --rm --name vllm-swap-" ~ m.name ~ " --network host --gpus all --ipc=host --env-file " ~ compose_dir ~ "/.env -v " ~ hf_cache_dir ~ ":/root/.cache/huggingface -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -e HF_HOME=/root/.cache/huggingface " ~ vllm_image ~ " " ~ m.model_repo ~ " --host 127.0.0.1 --port ${PORT} --served-model-name " ~ m.name ~ " --max-model-len " ~ (m.max_model_len | string) ~ " --gpu-memory-utilization " ~ (m.gpu_memory_utilization | default(gpu_memory_utilization | default(0.90)) | string) ~ ((" " ~ _args) if (_args | length > 0) else "") %}
+{% set _image = m.image | default(vllm_image) %}
+{% set _cmd = "docker run --rm --name vllm-swap-" ~ m.name ~ " --network host --gpus all --ipc=host --env-file " ~ compose_dir ~ "/.env -v " ~ hf_cache_dir ~ ":/root/.cache/huggingface -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -e HF_HOME=/root/.cache/huggingface " ~ _image ~ " " ~ m.model_repo ~ " --host 127.0.0.1 --port ${PORT} --served-model-name " ~ m.name ~ " --max-model-len " ~ (m.max_model_len | string) ~ " --gpu-memory-utilization " ~ (m.gpu_memory_utilization | default(gpu_memory_utilization | default(0.90)) | string) ~ " --tensor-parallel-size " ~ (m.tensor_parallel_size | default(1) | string) ~ " --dtype " ~ (m.dtype | default('auto') | string) ~ ((" " ~ _args) if (_args | length > 0) else "") %}
   {{ m.name | to_json }}:
     # --network host is REQUIRED on UpCloud: containers on the DEFAULT docker bridge have no working
     # DNS (they get the UpCloud resolvers in resolv.conf but can't reach them from the bridge), so

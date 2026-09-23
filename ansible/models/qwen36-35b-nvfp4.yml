@@ -1,9 +1,23 @@
 ---
-# Qwen3.6-35B-A3B in NVFP4 — Blackwell (B200) ONLY. Official NVIDIA ModelOpt checkpoint (~19 GB).
-# MoE NVFP4 backend: let vLLM auto-select (CUTLASS). Do NOT set VLLM_USE_FLASHINFER_MOE_FP4=1 — on this
-# auto-detected (no --quantization). --language-model-only drops the vision tower; --enforce-eager
-# guards the hybrid state cache (drop once stable on Blackwell). min_vram_gb=175 pins to B200.
-# Live-validated on B200 2026-07-04 (262144, KV 13.9M tok, 53.02x, 168/183 GiB); llama-swap 2026-07-05.
+# Qwen3.6-35B-A3B in NVFP4 — Blackwell only: B200 (cc 10.0) or RTX PRO 6000 (cc 12.0). Official
+# NVIDIA ModelOpt checkpoint (~19 GB). Quantization is auto-detected (no --quantization); let vLLM
+# pick the NVFP4 MoE backend, since VLLM_USE_FLASHINFER_MOE_FP4=1 raises "no FlashInfer NVFP4 MoE
+# backend supports the configuration" on this image. --language-model-only drops the vision tower;
+# --enforce-eager guards the hybrid state cache (drop it once that is stable on Blackwell).
+#
+# VALIDATED on both lanes.
+#   B200, 2026-07-04: 262144 ctx, KV 13.9M tokens, 53.02x concurrency, 168/183 GiB; re-served via
+#     llama-swap 2026-07-05.
+#   RTX PRO 6000, 2026-09-20: GPU-SPOT-16xCPU-80GB-1xRTXPRO6000, driver 595.58.03, on the shared
+#     cu129 pin. vLLM chose the 'MARLIN' NvFp4 MoE kernel and answered correctly throughout. KV pool
+#     6,269,102 tokens, 23.91x at 262,144, 90,283/97,887 MiB. soak 3x20 @32768: factual 6/6, traps
+#     2/2 declined, 60/60 needles, 0 wrong, p50 17.3 s.
+#
+# Until that run this profile refused cc 12.0, on the grounds that NVFP4 MoE takes a CUTLASS grouped
+# block-scaled GEMM returning invalid output on cu129. gemma4-26b-nvfp4 passed the same test the
+# same day through 'VLLM_CUTLASS', so the gate had been banning the whole family over one suspect
+# kernel. Both upstream fixes had already landed: flashinfer-ai/flashinfer#2708 closed 2026-04-20
+# and vllm-project/vllm#54189 closed 2026-08-30, before this image was built on 2026-06-13.
 model_repo: "nvidia/Qwen3.6-35B-A3B-NVFP4"
 served_name: "qwen3.6-35b-a3b-nvfp4"
 tensor_parallel_size: 1
@@ -22,5 +36,9 @@ extra_vllm_args:
   - "--enforce-eager"
   - "--kv-cache-dtype"
   - "fp8"
-min_plan: "GPU-24xCPU-240GB-1xB200"
-min_vram_gb: 175   # B200 reports 179 GB after floor-div (183,359 MiB) — measured live 2026-07-04
+min_plan: "GPU-16xCPU-80GB-1xRTXPRO6000"   # 1.65/h list, 1.24 spot; the 1xB200 lane (4.50/h)
+                   # also serves this profile.
+min_vram_gb: 40                  # real weight+KV floor; the capability gates below pin the family
+min_disk_gb: 110   # disk size to provision: (weights_gb + 80) / 0.934
+weights_gb: 22   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+min_compute_capability: 10.0     # NVFP4 needs Blackwell — no L4/L40S/H100

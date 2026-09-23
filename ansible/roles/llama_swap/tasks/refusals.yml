@@ -1,0 +1,116 @@
+---
+# Per-entry preflights for a multi-model swap preset. Split out of main.yml so tests/swap-refusals.yml
+# exercises the same asserts the role runs; a copy inside the test would drift from the role.
+#
+# Imported by roles/llama_swap/tasks/main.yml after resolve_models.yml has built `swap_models`.
+- name: Validate each swap_models entry has the required keys
+  ansible.builtin.assert:
+    that:
+      - item.name is defined and (item.name | string | length) > 0
+      - item.model_repo is defined and (item.model_repo | string | length) > 0
+      - item.max_model_len is defined
+    fail_msg: "swap_models entry is missing name/model_repo/max_model_len: {{ item }}"
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+
+# A preset is a menu of profiles, and llama-swap starts each one on this GPU. Single-model mode
+# preflights its one profile in the vllm role; without the same check here a preset could include a
+# model this GPU cannot serve, and the failure would only surface on the first request to it.
+- name: Preflight — every model in the preset can run on this GPU
+  ansible.builtin.assert:
+    that:
+      - (gpu_total_vram_gb is not defined) or
+        ((gpu_total_vram_gb | int) >= (item.min_vram_gb | default(0) | int))
+      - (gpu_compute_cap is not defined) or
+        ((gpu_compute_cap | float) >= (item.min_compute_capability | default(0) | float))
+      - (gpu_compute_cap is not defined) or
+        ((gpu_compute_cap | float) not in
+         (item.unsupported_compute_capabilities | default([]) | map('float') | list))
+      - (gpu_count is not defined) or
+        ((gpu_count | int) >= (item.tensor_parallel_size | default(1) | int))
+    fail_msg: >-
+      Swap preset entry '{{ item.name }}' cannot run on this server
+      ({{ gpu_count | default('?') }}x {{ gpu_name | default('?') }},
+      {{ gpu_total_vram_gb | default('?') }} GB per GPU, compute capability
+      {{ gpu_compute_cap | default('?') }}). It needs >= {{ item.min_vram_gb | default(0) }} GB,
+      compute capability >= {{ item.min_compute_capability | default(0) }}
+      (excluding {{ item.unsupported_compute_capabilities | default([]) }}) and
+      {{ item.tensor_parallel_size | default(1) }} GPU(s). Pick a preset that matches the plan
+      (bin/spin swap-profiles), or drop that model from the preset.
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+  when: not (allow_unvalidated_model | default(false) | bool)
+
+# The llama-swap backend is a bare `docker run` (llama-swap.yaml.j2). It carries the image, repo,
+# context, memory fraction, TP, dtype and extra_vllm_args — and nothing else. A profile that needs a
+# per-model environment variable or an out-of-tree plugin overlay would start and serve, silently
+# missing the thing that makes it correct. That is strictly worse than not deploying: the failure
+# signature for a zeroed NVFP4 MoE (vllm-project/vllm#54189) is one token repeated, which reads as a
+# bad model rather than a bad deployment. Refuse instead.
+- name: Preflight — the preset contains no profile llama-swap cannot faithfully express
+  ansible.builtin.assert:
+    that:
+      - (item.extra_env | default({})) | length == 0
+      - (item.vllm_plugins | default([])) | length == 0
+    fail_msg: >-
+      Swap preset entry '{{ item.name }}' cannot be served faithfully by llama-swap: it declares
+      {{ 'extra_env ' ~ (item.extra_env | default({}) | list | join(', ')) if (item.extra_env | default({})) | length > 0 else '' }}
+      {{ 'vllm_plugins ' ~ (item.vllm_plugins | default([]) | map(attribute='name') | join(', ')) if (item.vllm_plugins | default([])) | length > 0 else '' }}
+      and the generated backend command carries neither. The model would load and answer, with the
+      setting silently absent. Deploy it single-model instead
+      (bin/spin up --model {{ item.name }}), or drop it from the preset.
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+
+# llama-swap does carry extra_vllm_args, so a profile that sets --no-enable-prefix-caching keeps it
+# in the backend command. The hole is a profile that declares the architecture and forgets the flag:
+# the entry serves, and on a long cached prefix it answers fast and wrong with no crash and nothing
+# logged (vllm#56960; see docs/gpu-spinner.md, "Hybrid checkpoints and prefix caching").
+# tests/check-prefix-caching.sh catches that in CI, and this is the same assertion at deploy time,
+# for a preset assembled outside CI.
+- name: Preflight — no hybrid entry reaches the swap backend with prefix caching on
+  ansible.builtin.assert:
+    that:
+      - not (item.hybrid_recurrent_state | default(false) | bool)
+        or ('--no-enable-prefix-caching' in (item.args | default([])))
+      - not (item.hybrid_recurrent_state | default(false) | bool)
+        or ('--enable-prefix-caching' not in (item.args | default([])))
+    fail_msg: >-
+      Swap preset entry '{{ item.name }}' declares hybrid_recurrent_state (its attention carries
+      recurrent state) but does not pin prefix caching off. vLLM defaults enable_prefix_caching to
+      true, and a cache hit resumes those layers from a recycled block's state, so the model answers
+      confidently wrong on a long prompt — no crash, nothing logged (vllm#56960). Add
+      "--no-enable-prefix-caching" to that profile's extra_vllm_args, or drop it from the preset.
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+
+- name: Warn when a preset entry needs multiple GPUs (swap-in will be slow)
+  ansible.builtin.debug:
+    msg: >-
+      '{{ item.name }}' runs at tensor-parallel size {{ item.tensor_parallel_size }}. It is served
+      correctly, but every swap-in re-initialises {{ item.tensor_parallel_size }} ranks, so the
+      first request after an idle period waits minutes rather than seconds. Consider single-model
+      mode for this profile.
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+  when: (item.tensor_parallel_size | default(1) | int) > 1
+
+- name: Warn about preset entries with no live run on this GPU yet
+  ansible.builtin.debug:
+    msg: >-
+      UNTESTED: '{{ item.name }}' has no recorded run on {{ gpu_name | default('this GPU') }}
+      (compute capability {{ gpu_compute_cap | default('?') }}). It should serve; the numbers in
+      docs/validation.md are from other hardware.
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+  when:
+    - gpu_compute_cap is defined
+    - (not (item.validated | default(true) | bool)) or
+      ((gpu_compute_cap | float) in
+       (item.untested_compute_capabilities | default([]) | map('float') | list))
