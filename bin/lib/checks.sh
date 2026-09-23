@@ -46,10 +46,18 @@ _gs_haystack() {
 }
 
 # Build a needle-in-haystack prompt.  Args: haystack-file depth-percent needle out-file
+#
+# Every prompt opens with a unique session tag, which is what makes these probes measure the model
+# rather than the prefix cache: the haystack is one line repeated tens of thousands of times and is
+# reused across probes, so without the tag the second and later probes hit cached blocks. A tag at
+# position 0 invalidates the whole prefix chain. On a hybrid checkpoint a cached probe answers fast
+# and wrong (docs/gpu-spinner.md, "Hybrid checkpoints and prefix caching").
 _gs_prompt() {
   local hay="$1" frac="$2" needle="$3" out="$4" lines cut_at
   lines="$(wc -l < "$hay")"; cut_at=$(( lines * frac / 100 )); [ "$cut_at" -lt 1 ] && cut_at=1
+  _GS_SEQ=$(( ${_GS_SEQ:-0} + 1 ))
   {
+    printf 'Session tag: %s-%s-%s\n\n' "$$" "$_GS_SEQ" "${RANDOM}${RANDOM}"
     printf 'Read the following archive dump carefully.\n\n'
     head -n "$cut_at" "$hay"
     printf '\nThe archival reference code for this cabinet is %s.\n\n' "$needle"
@@ -209,8 +217,10 @@ cmd_soak() {
   # depth and is graded on retrieving it, because counting non-empty replies to one-line prompts
   # measures availability only: vllm-project/vllm#55757 reports a broken sparse-MLA path on sm_120
   # answering short prompts correctly and failing only at realistic lengths. Needles are synthetic
-  # ASCII (nothing to fold or normalise) and unique per request, so a prefix-cache hit from a
-  # sibling cannot fake a pass.
+  # ASCII (nothing to fold or normalise) and unique per request, so one request cannot be graded
+  # correct on another's needle. Keeping the prefix cache out of the measurement is a separate job,
+  # done by _gs_prompt's session tag: the needle sits deep in the prompt, so requests still share a
+  # long identical prefix ahead of it.
   local tmp; tmp="$(mktemp -d)"
 
   echo "  --- graded long-context load: $rounds rounds x $conc parallel, ~$ctx tok each ---"
@@ -276,7 +286,15 @@ cmd_soak() {
     || die "Soak: endpoint NOT healthy after load — investigate (docker logs / nvidia-smi via bin/spin ssh)."
   # A wrong answer from an admitted request fails the command; rejections and timeouts are
   # admission control and say nothing about correctness.
-  [ "$nwrong" -eq 0 ] || die "Soak: $nwrong admitted request(s) returned the wrong needle — long-context retrieval is broken (vllm-project/vllm#55757). Passing short prompts does not clear it."
+  # Two known causes needing different fixes, so name both rather than the first one found.
+  [ "$nwrong" -eq 0 ] || die "Soak: $nwrong admitted request(s) returned the wrong needle — long-context retrieval is broken. Passing short prompts does not clear it.
+  Two known causes:
+    1. Prefix caching on a hybrid / linear-attention checkpoint (KDA, Gated DeltaNet, mamba
+       state): a cache hit resumes those layers from a recycled block and the answer comes back
+       fast and wrong (vllm#56960). Check this first, it is cheap — grep the engine log for
+       enable_prefix_caching=, and if it says True add --no-enable-prefix-caching and re-run.
+    2. A broken sparse-MLA path on sm_120 (vllm#55757), which answers short prompts correctly and
+       fails only at realistic lengths."
   log "Soak OK — factual $pass/$total, long-context $nfound/$reqs correct ($nrej rejected, $ntmo timed out)."
 }
 
@@ -290,14 +308,20 @@ cmd_soak() {
 # prints "Soak OK". This command probes one request at a time and gates every result on the
 # container's restart counter.
 #
-# THREE DIFFERENT CEILINGS, and only one of them needs this command:
+# FOUR CEILINGS, and only two of them need this command:
 #   1. CAPACITY — the KV pool cannot hold one full-length request. Free to find: read "GPU KV cache
 #      size" from `bin/spin validate` and divide by the context. vLLM refuses at startup rather
 #      than crashing, so there is nothing to search for.
 #   2. CRASH — the engine dies above some length, with the KV pool barely touched. This is what
 #      `ceiling` searches. glm53-flash-nvfp4 is the worked example: clean at 98,100 prompt tokens,
 #      CUDA illegal memory access at 102,400, KV peak 17.8% (vllm-project/vllm#54317).
-#   3. MODE FLOOR — the checkpoint needs a minimum context for a documented mode (deepseek-v4-pro's
+#   3. WRONG ANSWER — the engine stays up, returns HTTP 200 and the needle is absent. `ceiling`
+#      prints WRONG, and the restart counter is what separates it from a crash. Find the cause
+#      before capping max_model_len: the usual one is prefix caching on a hybrid checkpoint
+#      (vllm#56960), where every rung fails warm. On custom_model the whole ladder, 98,138 to
+#      1,044,002, passed cold and failed warm on the same engine, so capping would have shipped
+#      98,304 as a limit that does not exist.
+#   4. MODE FLOOR — the checkpoint needs a minimum context for a documented mode (deepseek-v4-pro's
 #      393216 is its "max" reasoning mode). Capping below it changes what the model is; the right
 #      answer there is fewer concurrent sequences, not a smaller context.
 #

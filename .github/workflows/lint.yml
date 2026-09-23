@@ -78,6 +78,12 @@ jobs:
         # Replaced the per-profile requires_review flag, which had its own regression test.
         run: tests/check-cost-gate.sh
 
+      - name: hybrid profiles keep prefix caching off
+        # Measured 2026-09-22: with prefix caching on, a KDA/GatedDeltaNet checkpoint answers fast
+        # and wrong on a cached long prefix, with no crash and nothing in the log (vllm#56960).
+        # Nothing else in CI would notice the flag being deleted.
+        run: tests/check-prefix-caching.sh
+
       - name: tests/plans.txt still matches UpCloud's live plan listing
         # The check above only proves the repo agrees with itself. This one asks the provider.
         # Skips cleanly when the secret is absent, so forks and PRs from forks still pass.

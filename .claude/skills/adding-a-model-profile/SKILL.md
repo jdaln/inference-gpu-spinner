@@ -26,6 +26,10 @@ never had. `glm52.yml` shipped that way and nobody noticed for months.
 REPO=owner/name
 curl -s "https://huggingface.co/api/models/$REPO" | jq '{gated, pipeline_tag}'
 curl -s "https://huggingface.co/$REPO/resolve/main/config.json" | jq '{architectures, num_hidden_layers, max_position_embeddings, quantization_config}'
+# The per-layer attention map — this is what tells you the checkpoint is hybrid.
+curl -s "https://huggingface.co/$REPO/resolve/main/config.json" \
+  | jq '{model_type, linear_attn_config, full_attn_layers, full_attention_interval,
+         layer_types: (.layer_types // [] | group_by(.) | map({(.[0]): length}) | add)}'
 # Real download size — sum the file listing. Avoid `usedStorage`: it counts every revision.
 curl -s "https://huggingface.co/api/models/$REPO?blobs=true" \
   | jq '[.siblings[].size] | add / 1073741824 | floor | tostring + " GB"'
@@ -34,6 +38,13 @@ curl -s "https://huggingface.co/api/models/$REPO?blobs=true" \
 - `architectures[0]` is what `tests/check-vllm-compat.py` checks against the pinned image.
 - `max_position_embeddings` is the checkpoint's **native** context. It is a starting point, not a
   measured ceiling.
+- **Is it hybrid?** Any per-layer type that is not full attention — `linear_attention` / KDA,
+  Gated DeltaNet, mamba — carries recurrent state across a prefill chunk, and the profile then
+  declares `hybrid_recurrent_state: true` and pins prefix caching off (§4). GLM-5.3-Flash is 45
+  layers with 34 KDA. With no per-layer map in the config, the model card and the architecture
+  name usually say so ("Next", "Flash", "Linear", "Hybrid"); vllm#51562 (closed 2026-09-22) names
+  the models sharing the GatedDeltaNet metadata builder: Qwen3-Next, Qwen3.5, OLMo-hybrid,
+  InternS2-Mobius, Bailing-MoE-v3, Kimi-Linear.
 - `gated: true` means you must also set `gated: true` in the profile, or the download 401s
   mid-deploy on a billing GPU.
 - Then read the model's own serving recipe (model card / vLLM release notes). The recipe usually
@@ -85,7 +96,16 @@ Required by this repo's own gates:
 
 Optional gates: `min_compute_capability`, `unsupported_compute_capabilities` +
 `unsupported_reason`, `untested_compute_capabilities`, `min_driver_major`, `gated`,
-`vllm_image_override`, `extra_env`, `vllm_plugins`, `enable_lora`.
+`vllm_image_override`, `extra_env`, `extra_vllm_args`, `vllm_plugins`, `enable_lora`,
+`hybrid_recurrent_state`.
+
+**A hybrid checkpoint declares `hybrid_recurrent_state: true` and puts `--no-enable-prefix-caching`
+in `extra_vllm_args`.** vLLM defaults `enable_prefix_caching` to true, and on a model whose layers
+carry recurrent state that default returns confidently wrong answers on a long cached prefix
+(vllm#56960; measured 2026-09-22 — [docs/gpu-spinner.md](../../../docs/gpu-spinner.md#hybrid-checkpoints-and-prefix-caching)). The key is
+what arms the gates: `tests/check-prefix-caching.sh` (inside `make test`) fails any profile that
+declares it without the flag, and `roles/llama_swap/tasks/refusals.yml` asserts the same at deploy
+time. Copy the comment from `ansible/models/custom_model.yml`.
 
 Cost needs no key. `bin/spin` prices the resolved `min_plan` from `tests/plans.txt` and refuses
 anything above `MAX_EUR_PER_HOUR` (default 10) until the operator passes `--allow-expensive`, so an
@@ -105,6 +125,11 @@ Set it to the value the model's serving recipe gives, or to native if the recipe
 not cap it lower without a measurement, and do not claim native without one either.** Add a comment
 saying which it is. A measured cap comes from `bin/spin ceiling` and belongs to the other skill.
 
+A hybrid-model context number in this repo dated before 2026-09-22 predates the unique per-request session tag in
+`_gs_prompt` (`bin/lib/checks.sh`) — re-measure it if it came from a wrong-answer failure. A crash
+boundary caught by the container restart counter is unaffected, and a recorded pass stays a pass: a
+cache hit yields a wrong answer, so it can never manufacture one.
+
 ## 6. Comment the way this repo comments
 
 Read `ansible/models/glm53-flash-nvfp4.yml`, the house style, and copy its shape:
@@ -112,7 +137,11 @@ Read `ansible/models/glm53-flash-nvfp4.yml`, the house style, and copy its shape
 - what was measured, on what hardware, **on what date**;
 - `FLAGS THAT ARE NOT PREFERENCES` — every non-obvious flag with the failure it prevents;
 - upstream issue numbers for every claim;
-- a `ruled out, so nobody re-chases them` list;
+- a `ruled out, so nobody re-chases them` list, each entry naming the control that made it a real
+  test **and the fault it was ruled out _of_** — an unscoped "ruled out" reads as a blanket
+  clearance and stops the next person looking. `glm53-flash-nvfp4.yml` rules prefix caching out of
+  its **crash** boundary (a unique randomised haystack per request, still crashing at 131,072),
+  which says nothing about wrong answers: a separate fault in the same layers (vllm#56960);
 - the disk figure, and what happens if the disk is too small.
 
 **Check the upstream issues you cite are still open.** Several in this repo were fixed months
@@ -128,6 +157,8 @@ curl -s https://api.github.com/repos/vllm-project/vllm/issues/54189 | jq '{state
 context, memory fraction, TP, dtype and `extra_vllm_args` — **and nothing else**. A profile with
 `extra_env` or `vllm_plugins` is now refused outright (`roles/llama_swap/tasks/refusals.yml`),
 because it would otherwise start and serve silently-wrong output. Do not try to work around that.
+A `hybrid_recurrent_state` entry whose `extra_vllm_args` omit `--no-enable-prefix-caching` is
+refused by the same file, for the same reason (vllm#56960).
 
 Also note: in swap mode the client-facing name is the **profile filename**, not `served_name`.
 

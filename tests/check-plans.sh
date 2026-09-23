@@ -24,6 +24,22 @@ fi
 api() { curl -fsS --max-time 30 -H "Authorization: Bearer $UPCLOUD_TOKEN" "https://api.upcloud.com/1.3$1"; }
 ZONE="${UPCLOUD_ZONE:-fi-hel2}"
 
+# Separate "cannot ask" from "the answer disagrees". A dead or revoked token makes every comparison
+# below fail, and the output then reads as though tests/plans.txt had gone stale
+http="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+  -H "Authorization: Bearer $UPCLOUD_TOKEN" "https://api.upcloud.com/1.3/plan" || printf '000')"
+case "$http" in
+  200) : ;;
+  401|402|403)
+    echo "check-plans: UpCloud returned HTTP $http for the plan listing — the token was rejected."
+    echo "check-plans: this says nothing about tests/plans.txt, which was never compared. Check the"
+    echo "check-plans: account (credits, suspension) and UPCLOUD_TOKEN, then re-run."
+    exit 1 ;;
+  *)
+    echo "check-plans: could not reach the UpCloud plan listing (HTTP $http) — not compared."
+    exit 1 ;;
+esac
+
 live_plans="$(api /plan | jq -r '.plans.plan[].name' | sort)"
 # /price returns cents per hour, keyed server_plan_<id>.
 prices="$(api /price | jq -r --arg z "$ZONE" '

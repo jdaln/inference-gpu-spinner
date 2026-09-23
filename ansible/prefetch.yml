@@ -68,40 +68,51 @@
     # `du -L` follows huggingface_hub's symlinks into its shared blob store and dedups by inode.
     # Plain `du` and `find -L` both get it wrong — see the same measurement in
     # roles/vllm/tasks/main.yml.
-    - name: Measure free space and what the cache already holds
+    # `du -L` follows the shared blob store and dedups by inode, so each figure is what that model
+    # already occupies rather than what the disk happens to hold.
+    #
+    # The question is how much still has to be downloaded, plus 80 GB of headroom for the container
+    # image and Docker's data-root — not how big the disk is.
+    #
+    # Count per model, not against the whole cache: a disk holding something you are not fetching
+    # otherwise reads as free space you do not have. Measured 2026-09-21 — a 500 GB disk with 364 GB
+    # of k2-horizon cached had 102 GB free, and a 181 GB model needs 261 GB; whole-cache accounting
+    # would have compared 102 + 364 against 261, passed, and died at ~102 GB.
+    - name: Measure free space and what still has to be downloaded
       ansible.builtin.shell: |
         set -o pipefail
-        df -BG --output=avail {{ data_root | quote }} | tail -1 | tr -dc '0-9'
-        printf ' '
-        du -sBG -L {{ hf_cache_dir | quote }} 2>/dev/null | cut -f1 | tr -dc '0-9' || printf 0
+        avail=$(df -BG --output=avail {{ data_root | quote }} | tail -1 | tr -dc '0-9')
+        still=0
+        {% for m in _pf %}
+        have=$(du -sBG -L {{ (hf_cache_dir ~ '/hub/models--' ~ (m.model_repo | replace('/', '--'))) | quote }} \
+               2>/dev/null | cut -f1 | tr -dc '0-9'); have=${have:-0}
+        want={{ m.weights_gb | int }}
+        [ "$have" -lt "$want" ] && still=$(( still + want - have ))
+        {% endfor %}
+        printf '%s %s' "$avail" "$still"
       args:
         executable: /bin/bash
       register: pf_space
       changed_when: false
 
-    # Sum `weights_gb`, because every profile lands on one disk and nothing here evicts. Summing
-    # `min_disk_gb` instead would demand 400 GB of image space for ten profiles that share a single
-    # ~40 GB image allowance. Compare that sum against free space plus what the cache already holds:
-    # a resumed run has already spent disk on exactly these weights, and counting free space alone
-    # would refuse the second half of a download that fits.
-    - name: Preflight — the disk holds every requested profile at once
+    - name: Preflight — the disk has room for what still has to be downloaded
       vars:
         _free: "{{ (pf_space.stdout.split() | first) | int }}"
-        _cached: "{{ (pf_space.stdout.split() | last) | int }}"
-        _weights: "{{ _pf | map(attribute='weights_gb') | map('int') | sum }}"
-        _need: "{{ (_weights | int) + 80 }}"
+        _still: "{{ (pf_space.stdout.split() | last) | int }}"
+        _need: "{{ (_still | int) + 80 }}"
       ansible.builtin.assert:
         that:
-          - ((_free | int) + (_cached | int)) >= (_need | int)
+          - (_free | int) >= (_need | int)
         fail_msg: >-
-          {{ data_root }} can offer {{ (_free | int) + (_cached | int) }} GB to the cache
-          ({{ _free }} GB free + {{ _cached }} GB already cached), but these {{ _pf | length }}
-          profiles need {{ _need }} GB ({{ _weights }} GB of weights plus 80 GB of headroom).
-          Grow the disk (WEIGHTS_SIZE_GB=<n> then bin/spin persistent-init — it can grow but never
-          shrink) or fetch fewer profiles.
+          {{ _free }} GB free on {{ data_root }}, but {{ _pf | length }} requested profile(s) still
+          need {{ _still }} GB of weights downloaded, plus 80 GB of headroom = {{ _need }} GB.
+          Grow the disk (WEIGHTS_SIZE_GB={{ ((_need | int) + (_free | int) * 0 + 40) }} or more,
+          then bin/spin persistent-init — it can grow but never shrink), fetch fewer profiles, or
+          free space: du -sh -L {{ data_root }}/hf-cache/hub/models--* then rm -rf one you no
+          longer need.
         success_msg: >-
-          {{ _need }} GB needed for {{ _pf | length }} profile(s); {{ _free }} GB free plus
-          {{ _cached }} GB already cached
+          {{ _free }} GB free; {{ _still }} GB still to download for {{ _pf | length }} profile(s)
+          (+80 GB headroom = {{ _need }} GB needed)
 
     # Plain Ubuntu has no pip. The GPU template does, which is why the rest of this repo never
     # needed it.

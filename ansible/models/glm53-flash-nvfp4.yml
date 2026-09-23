@@ -104,8 +104,11 @@
 # 34 of the 45 layers are KDA, i.e. stock vLLM code that the sparse-MLA overlay never touches.
 #
 # Ruled out, so nobody re-chases them:
-#   * prefix caching (vllm-project/vllm#55600 names KDA): 1 x 131,072 with a unique randomised
-#     haystack per request, no cache hits possible, crashes identically.
+#   * prefix caching AS A CAUSE OF THIS CRASH (vllm-project/vllm#55600 names KDA): 1 x 131,072 with
+#     a unique randomised haystack per request, no cache hits possible, crashes identically.
+#     SCOPE, added 2026-09-22: that clears prefix caching for the CRASH only. It is not a clearance
+#     for correctness -- prefix caching corrupts ANSWERS on this architecture (vllm#56960, see the
+#     --no-enable-prefix-caching note above), which is a separate fault that never crashes anything.
 #   * concurrency: one request at 102,400 is enough.
 #   * KV capacity: peaked at 17.8% during a crash; the 4.55M-token pool would hold 10 x 455k.
 #   * memory exhaustion: VRAM flat at 86,981/97,887 MiB per GPU (that is the pre-allocated 0.90
@@ -165,6 +168,14 @@ extra_env:
   VLLM_GLM53_MOE_INPUT_SCALE: 1.0   # the missing NVFP4 MoE activation scale (#54189)
 extra_vllm_args:
   - "--no-enable-flashinfer-autotune"
+  # Correctness flag, not a tuning knob: this checkpoint is hybrid, and a prefix-cache hit resumes
+  # its KDA layers from a recycled block's recurrent state, so a long prompt is answered fast and
+  # wrong (vllm#56960). Measured 2026-09-22 — see docs/gpu-spinner.md, "Hybrid checkpoints and
+  # prefix caching".
+  # Separate from the 98,304 crash cap below: that is an illegal memory access caught by
+  # RestartCount, and this defect never crashes an engine. The recorded soak passes also stand --
+  # a cache hit returns a wrong answer, so it cannot manufacture a pass.
+  - "--no-enable-prefix-caching"
   - "--kv-cache-dtype"
   - "fp8"
   - "--reasoning-parser"
@@ -172,6 +183,9 @@ extra_vllm_args:
   - "--tool-call-parser"
   - "glm47"
   - "--enable-auto-tool-choice"
+# Hybrid attention: most layers carry recurrent state, which is what makes
+# --no-enable-prefix-caching mandatory above. tests/check-prefix-caching.sh keys on this.
+hybrid_recurrent_state: true
 min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
 min_vram_gb: 90    # per-GPU floor: RTX PRO 6000 reports 95, B200 179; keeps H100 (79) out
 min_disk_gb: 280   # disk size to provision: (weights_gb + 80) / 0.934

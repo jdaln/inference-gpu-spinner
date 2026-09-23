@@ -23,6 +23,14 @@ enable_lora: false
 extra_vllm_args:
   - "--language-model-only"
   - "--reasoning-parser=qwen3"
+  # Prefix caching stays on, reviewed 2026-09-22. This is a hybrid checkpoint, the class where a
+  # cache hit can answer fast and wrong (see docs/gpu-spinner.md, "Hybrid checkpoints and prefix
+  # caching") — but qwen38 and
+  # qwen38-flash-next both hold graded long-context passes with caching on, so the Qwen hybrids have
+  # counter-evidence. This profile has none of its own: its row predates the graded soak. Being the
+  # repo default on the cheapest lane, it is the first thing to re-measure on the next GPU:
+  #   bin/spin soak --rounds 1 --concurrency 3 --context 262144
+  # A wrong needle there with RestartCount unmoved means flip this flag.
   - "--enable-prefix-caching"
   - "--enforce-eager"
   - "--max-num-batched-tokens=2048"

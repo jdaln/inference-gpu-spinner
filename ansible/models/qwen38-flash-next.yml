@@ -79,6 +79,13 @@ extra_vllm_args:
   - "--moe-backend"
   - "triton"
   - "--max-num-seqs=256"
+  # Prefix caching stays on, reviewed 2026-09-22. This is a hybrid checkpoint, the class where a
+  # cache hit can answer fast and wrong (see docs/gpu-spinner.md, "Hybrid checkpoints and prefix
+  # caching"), but this
+  # profile's ceiling rungs are counter-evidence: 65,429 / 130,803 / 259,512 prompt_tokens all
+  # passed with the flag set, under the pre-2026-09-22 soak that reused one haystack per context, so
+  # they ran with cache hits and still retrieved correctly. A cache hit answers wrongly, so a pass
+  # cannot be an artefact of one. Re-test before changing it.
   - "--enable-prefix-caching"
   - "--no-enable-flashinfer-autotune"
   - "--reasoning-parser"
@@ -96,6 +103,6 @@ validated: true    # live run 2026-09-20 on 4x RTX PRO 6000 (spot) — see docs/
 #   TRITON Fp8 MoE · model load 32.72 GiB/rank in ~29 s · engine init 110.7 s
 #   soak 3x20 @32768: factual 6/6, 60/60 needles, 0 wrong/rejected/timed-out, p50 20.8 s
 #   ceiling: 65,429 / 130,803 / 259,512 prompt_tokens all PASS — 262144 is measured, not the recipe.
-# NCCL over PCIe came up first try on this 4-GPU plan; NCCL_P2P_DISABLE was NOT needed.                 # newly added — no live run on this account yet
+# NCCL over PCIe came up first try on this 4-GPU plan; NCCL_P2P_DISABLE was not needed.                 # newly added — no live run on this account yet
 untested_compute_capabilities: [12.0]   # RTX PRO 6000 is now the default lane; nothing measured there
 health_wait_retries: 200         # x10s = 33 min — ~186 GB download, TP=4 init, N-gram table offload

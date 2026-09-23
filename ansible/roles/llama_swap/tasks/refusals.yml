@@ -65,6 +65,29 @@
   loop_control:
     label: "{{ item.name | default('<no name>') }}"
 
+# llama-swap does carry extra_vllm_args, so a profile that sets --no-enable-prefix-caching keeps it
+# in the backend command. The hole is a profile that declares the architecture and forgets the flag:
+# the entry serves, and on a long cached prefix it answers fast and wrong with no crash and nothing
+# logged (vllm#56960; see docs/gpu-spinner.md, "Hybrid checkpoints and prefix caching").
+# tests/check-prefix-caching.sh catches that in CI, and this is the same assertion at deploy time,
+# for a preset assembled outside CI.
+- name: Preflight — no hybrid entry reaches the swap backend with prefix caching on
+  ansible.builtin.assert:
+    that:
+      - not (item.hybrid_recurrent_state | default(false) | bool)
+        or ('--no-enable-prefix-caching' in (item.args | default([])))
+      - not (item.hybrid_recurrent_state | default(false) | bool)
+        or ('--enable-prefix-caching' not in (item.args | default([])))
+    fail_msg: >-
+      Swap preset entry '{{ item.name }}' declares hybrid_recurrent_state (its attention carries
+      recurrent state) but does not pin prefix caching off. vLLM defaults enable_prefix_caching to
+      true, and a cache hit resumes those layers from a recycled block's state, so the model answers
+      confidently wrong on a long prompt — no crash, nothing logged (vllm#56960). Add
+      "--no-enable-prefix-caching" to that profile's extra_vllm_args, or drop it from the preset.
+  loop: "{{ swap_models | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('<no name>') }}"
+
 - name: Warn when a preset entry needs multiple GPUs (swap-in will be slow)
   ansible.builtin.debug:
     msg: >-

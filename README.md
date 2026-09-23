@@ -65,7 +65,7 @@ curl https://<host>.sslip.io/v1/chat/completions \
 
 ## Models
 
-Pick a profile with `--model` (or `-e vllm_model=`); profiles live in `ansible/models/`. FP8 runs
+Pick a profile with `--model` (or `-e vllm_model=`); profiles live in `ansible/models/`. To serve something with no profile here, copy [`ansible/models/custom_model.yml`](ansible/models/custom_model.yml) — it is a working example with four `EDIT ME` markers (repo, served name, vLLM args, sizing) and no registration step: the filename is the model name. FP8 runs
 anywhere from an L40S up; **NVFP4** needs Blackwell (~2× smaller + faster), and *which* Blackwell
 depends on whether the checkpoint is dense or MoE — see below the table.
 
@@ -90,6 +90,7 @@ model is still waiting for someone to measure it.
 | `glm53-flash` | GLM-5.3-Flash, FP8 build | FP8 | 4×B200 — €18/h | — (new) |
 | `glm53` | GLM-5.3 (743B-A39B MoE) | FP8 | 8×B200 — €36/h | — (new) |
 | `k2-horizon-375b` | K2-Horizon-375B-A23B (379B-A27B MoE) | FP8 | **8×RTX PRO 6000** (TP=8) — €13.20/h | — (new) |
+| `custom_model` | **the editable custom recipe**  | - | 4×RTX PRO 6000 | 2026-09-22 |
 | `kimi-k3` | Kimi K3 (93L, 896 experts, **multimodal**) | compressed-tensors | **no UpCloud plan fits** | — (new) |
 | `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision-Exp (285B-A13B MoE, **multimodal**) | FP4+FP8 | 4×B200 — €18/h | — (new) |
 | `deepseek-v41-flash` | DeepSeek-V4.1-Flash (552B + 196B Engram MoE, **multimodal**) | MXFP4+MXFP8 | 4×B200 — €18/h | — (new) |
@@ -134,6 +135,10 @@ run as a validation, capture `bin/spin validate` **and `bin/spin soak`**, and ad
 `bin/spin prefetch <profile>` first — a weights pull is billed at whatever compute holds the disk,
 and doing it on a CPU box instead of a GPU is about 150× cheaper. If the profile's `max_model_len`
 is the recipe's number rather than a measurement, `bin/spin ceiling` finds the real boundary.
+On a hybrid checkpoint (KDA, Gated DeltaNet, mamba state), check the engine log for
+`enable_prefix_caching=` before believing any long-context result — a cache hit makes the model
+answer fast and wrong ([vllm#56960](https://github.com/vllm-project/vllm/issues/56960);
+[what to do about it](docs/gpu-spinner.md#hybrid-checkpoints-and-prefix-caching)).
 Two skills in [`.claude/skills/`](.claude/skills/) walk an agent through both jobs:
 `adding-a-model-profile` (offline, free) and `testing-a-model-profile` (live, billed).
 
@@ -152,9 +157,12 @@ whatever you pass. `--allow-unvalidated` is a different flag: it overrides the h
 are the validated path; the FP8 builds carry a longer context (`glm53-flash` 1048576 against a
 *measured* 98304 cap on the NVFP4 sibling; `glm52` 1048576 against 786432), higher-precision
 weights, and no dependency on a pinned third-party kernel overlay. Use the NVFP4 lane unless you
-need one of those. Note the FP8 context figures are the recipes' numbers and unmeasured —
-[vllm#54317](https://github.com/vllm-project/vllm/issues/54317) reports the same crash frame on
-4×B200 that capped the NVFP4 build, so ceiling-search before relying on 1M.
+need one of those. Note the FP8 context figures are the recipes' numbers and unmeasured, so
+ceiling-search before relying on 1M. The crash frame in
+[vllm#54317](https://github.com/vllm-project/vllm/issues/54317) is not an architecture-wide limit:
+on 2026-09-22 `custom_model` reached 1,044,002 prompt tokens on the same geometry, image digest and
+overlay commit that caps its NVFP4 sibling near 100k, pointing at the NVFP4 build rather than at KDA
+in general.
 
 All 21 model repos are **ungated** on Hugging Face (re-verified 2026-09-20), so no `HF_TOKEN` is
 required — but set one in `.env` anyway: anonymous downloads throttle to ~50 KB/s after a few

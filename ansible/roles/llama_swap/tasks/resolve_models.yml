@@ -30,10 +30,13 @@
       health_wait_retries: "{{ _profile.health_wait_retries | default(90) }}"
       # Carried so the role can REFUSE them: the llama-swap backend is a bare `docker run` with no
       # per-model environment and no plugin mounts (see llama-swap.yaml.j2), so a profile relying on
-      # either would start and serve WRONG output rather than fail. glm53-flash-nvfp4 is the live
+      # either would start and serve wrong output rather than fail. glm53-flash-nvfp4 is the live
       # example — without VLLM_GLM53_MOE_INPUT_SCALE every expert output is multiplied by zero.
       extra_env: "{{ _profile.extra_env | default({}) }}"
       vllm_plugins: "{{ _profile.vllm_plugins | default([]) }}"
+      # Carried so refusals.yml can check it: a hybrid checkpoint must pin prefix caching off
+      # (vllm#56960). The flag itself travels in `args` above; this key is what makes it mandatory.
+      hybrid_recurrent_state: "{{ _profile.hybrid_recurrent_state | default(false) }}"
       # NOT carried, by design: `served_name`. In swap mode the client-facing name is the profile
       # FILENAME (llama-swap.yaml.j2 passes `--served-model-name <m.name>`), because that is the key
       # a preset lists and the string a client puts in the OpenAI `model` field. So `qwen36` serves

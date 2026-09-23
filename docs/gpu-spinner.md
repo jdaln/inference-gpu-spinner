@@ -218,6 +218,43 @@ plus egress). Keep-warm pays off above roughly one spin per few days; otherwise 
   checkpoint never does, it reads 0.0, and every expert output is multiplied by zero — silently. The
   tell is a model that loads and serves but emits one token repeatedly.
 
+### Hybrid checkpoints and prefix caching
+
+A checkpoint is **hybrid** when some layers carry recurrent state instead of full attention — KDA /
+`linear_attention`, Gated DeltaNet, mamba. `config.json` shows it in `layer_types`,
+`linear_attn_config` or `full_attention_interval`; GLM-5.3-Flash is 45 layers of which 34 are KDA.
+[vllm#51562](https://github.com/vllm-project/vllm/issues/51562) names the families sharing the
+GatedDeltaNet metadata builder: Qwen3-Next, Qwen3.5, OLMo-hybrid, InternS2-Mobius, Bailing-MoE-v3
+and Kimi-Linear.
+
+On those models vLLM's default `enable_prefix_caching=True` **returns fast, confidently wrong
+answers**. Under `mamba-cache-mode=align` the recurrent layers persist state at the end of a prefill
+chunk rather than at the reusable cache boundary
+([vllm#56960](https://github.com/vllm-project/vllm/issues/56960), open), and mamba state pages are
+not zeroed on reallocation ([vllm#51483](https://github.com/vllm-project/vllm/issues/51483), merged
+2026-09-16; [vllm#51562](https://github.com/vllm-project/vllm/issues/51562), closed 2026-09-22 by
+PR #51565, so the fix is in no image pinned before that date), so
+a cache hit resumes 34 layers from whatever the recycled block last held. Measured 2026-09-22 on
+4×RTX PRO 6000 with `custom_model`: the identical 196,171-token needle probe came back **wrong in
+4 s** served from cache and **right in 20 s** when a unique token at position 0 forced a real
+prefill — 2/2 each way, temperature 0, container restart counter unmoved.
+
+Three consequences worth holding onto:
+
+- It corrupts answers and never crashes, so it explains no crash ceiling — `glm53-flash-nvfp4`'s
+  98,304 cap is a CUDA illegal memory access ([vllm#54317](https://github.com/vllm-project/vllm/issues/54317))
+  and untouched by this.
+- A cache hit answers *wrongly*, so it can never manufacture a false pass. Recorded passes stand;
+  recorded failures and any cap derived from one are what deserve re-measuring.
+- Multi-turn chat and a shared system prompt are cache hits by construction, so real traffic meets
+  this sooner than a benchmark does.
+
+The rule: an affected profile sets `hybrid_recurrent_state: true` and puts
+`--no-enable-prefix-caching` in `extra_vllm_args`. `tests/check-prefix-caching.sh` fails CI if the
+key is there without the flag, and `roles/llama_swap/tasks/refusals.yml` asserts the same at deploy
+time. Drop the flag only once vllm#56960 is in the pinned image and `bin/spin soak` passes twice
+without it.
+
 ### cu130 images, and the driver that gates them
 
 `vllm/vllm-openai` publishes cu130 tags for these models in the repository this repo already pins

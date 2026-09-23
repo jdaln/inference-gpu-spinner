@@ -38,6 +38,13 @@ gpu_memory_utilization: 0.90
 dtype: "auto"
 enable_lora: false
 extra_vllm_args:
+  # Correctness flag, not a tuning knob: this checkpoint is hybrid, and a prefix-cache hit resumes
+  # its KDA layers from a recycled block's recurrent state, so a long prompt is answered fast and
+  # wrong (vllm#56960). Measured 2026-09-22 — see docs/gpu-spinner.md, "Hybrid checkpoints and
+  # prefix caching".
+  # This profile has never had a live run, so nothing here is being retracted -- the flag is set
+  # before the first EUR 18/h session rather than after it.
+  - "--no-enable-prefix-caching"
   - "--kv-cache-dtype"
   - "fp8"
   - "--reasoning-parser"
@@ -45,6 +52,9 @@ extra_vllm_args:
   - "--tool-call-parser"
   - "glm47"
   - "--enable-auto-tool-choice"
+# Hybrid attention: most layers carry recurrent state, which is what makes
+# --no-enable-prefix-caching mandatory above. tests/check-prefix-caching.sh keys on this.
+hybrid_recurrent_state: true
 min_plan: "GPU-96xCPU-960GB-4xB200"
 min_vram_gb: 175   # per-GPU floor (B200 reports 179 GB); ~306 GiB of weights across TP=4
 min_disk_gb: 420   # disk size to provision: (weights_gb + 80) / 0.934
