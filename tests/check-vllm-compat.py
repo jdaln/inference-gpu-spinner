@@ -47,6 +47,9 @@ TAG_TO_REF = {
     "glm53-flash-x86_64-cu130": "main",
 }
 
+# Copy-me templates keep placeholder values (repo, image) on purpose, so there is nothing to check.
+TEMPLATES = {"custom_model"}
+
 REGISTRY = "vllm/model_executor/models/registry.py"
 REASONING = "vllm/reasoning/__init__.py"
 TOOLS = "vllm/tool_parsers/__init__.py"
@@ -120,6 +123,9 @@ def main(argv):
     for path in sorted((ROOT / "ansible/models").glob("*.yml")):
         profile = parse_profile(path)
         if wanted and profile["name"] not in wanted:
+            continue
+        if profile["name"] in TEMPLATES:
+            print(f"  -  {profile['name']:<26} template, skipped")
             continue
         # A profile may pin "repo:tag@sha256:..." to hold a mutable tag still. The digest is what
         # docker resolves; the tag is what identifies the vLLM build, so map on the tag alone.

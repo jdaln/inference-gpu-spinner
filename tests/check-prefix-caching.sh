@@ -7,12 +7,15 @@
 # Keyed on `hybrid_recurrent_state: true`, which a profile declares whenever config.json shows
 # linear_attn_config, or layer_types carrying linear_attention / a mamba state cache / Gated
 # DeltaNet. From then on --no-enable-prefix-caching is mandatory.
+#
+# custom_model is the copy-me template and leaves the flag for the copier to decide, so it is skipped.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 rc=0
 checked=0
 for f in ansible/models/*.yml; do
+  [ "$(basename "$f" .yml)" = custom_model ] && continue
   grep -qE '^hybrid_recurrent_state:[[:space:]]*(true|yes)[[:space:]]*(#.*)?$' "$f" || continue
   checked=$(( checked + 1 ))
   name="$(basename "$f" .yml)"
