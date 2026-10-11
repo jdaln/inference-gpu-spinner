@@ -8,3 +8,7 @@ docker_gpu_smoketest: false
 # threshold (so it won't break a not-yet-resized disk). Needs the weights disk >= the threshold.
 docker_data_root_on_data: true
 docker_data_root_min_gb: 100
+
+# The NVIDIA Container Toolkit check is mandatory on a GPU box and meaningless on the prefetch box
+# (ansible/prefetch.yml), which only pulls images and weights onto the shared /data disk.
+docker_require_nvidia: true

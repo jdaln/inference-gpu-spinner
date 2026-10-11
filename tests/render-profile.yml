@@ -28,3 +28,28 @@
         fail_msg: "profile '{{ profile }}' renders invalid compose YAML"
       vars:
         rendered: "{{ lookup('ansible.builtin.file', '/tmp/render-' ~ profile ~ '.yml') | from_yaml }}"
+
+    # The plugin-overlay branch of the template is only taken once roles/vllm/tasks/plugins.yml has
+    # built something, which needs a GPU box. Simulate the fact it sets so CI still covers the
+    # mount + PYTHONPATH wiring for any profile that pins an out-of-tree plugin.
+    - name: Render again with the plugin mounts a build would produce
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../ansible/roles/vllm/templates/compose.yml.j2"
+        dest: "/tmp/render-{{ profile }}-plugins.yml"
+        mode: "0644"
+      vars:
+        vllm_plugin_mounts: "{{ vllm_plugins | map(attribute='name') | map('regex_replace', '^', '/data/ext/') | list }}"
+      when: (vllm_plugins | default([])) | length > 0
+
+    - name: Each pinned plugin is mounted read-only and on PYTHONPATH
+      ansible.builtin.assert:
+        that:
+          - rendered.services.vllm.volumes | select('search', ':/opt/vllm-plugins/') | list | length
+            == (vllm_plugins | length)
+          - rendered.services.vllm.volumes | select('search', ':ro$') | list | length
+            == (vllm_plugins | length)
+          - rendered.services.vllm.environment | select('match', 'PYTHONPATH=') | list | length == 1
+        fail_msg: "profile '{{ profile }}' does not wire its vllm_plugins into the container"
+      vars:
+        rendered: "{{ lookup('ansible.builtin.file', '/tmp/render-' ~ profile ~ '-plugins.yml') | from_yaml }}"
+      when: (vllm_plugins | default([])) | length > 0

@@ -28,3 +28,14 @@ variable "weights_tier" {
   type        = string
   default     = "maxiops"
 }
+
+variable "weights_alt_size_gb" {
+  description = <<-EOT
+    Size (GB) of an OPTIONAL second data disk, or 0 for none (the default). Use it to run one model
+    without growing or evicting the primary cache — point a spin-up at it with WEIGHTS_DISK=alt.
+    It bills 24/7 exactly like the primary, and unlike the primary it has no prevent_destroy, so
+    set this back to 0 when the experiment is finished.
+  EOT
+  type        = number
+  default     = 0
+}

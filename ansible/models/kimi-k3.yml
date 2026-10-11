@@ -1,0 +1,53 @@
+---
+# Kimi K3 (Moonshot AI) — 93-layer multimodal MoE with 896 experts, 1M native context.
+# ~1561 GB of weights across 96 shards, compressed-tensors quantized.
+#
+# NO UPCLOUD PLAN FITS THIS PROFILE. It is here so the requirement is recorded and so it starts
+# working the day a large enough tier appears; the preflights refuse it on everything UpCloud sells
+# today rather than letting it fail an hour into a paid deploy. Three things block it:
+#
+#   1. VRAM. The recipe's floor is "at least 8x GB300" — 8x 288 GB = 2304 GB. UpCloud's largest GPU
+#      plan is 8x B200, ~1538 GB usable, and the weights alone are ~1561 GB before KV or
+#      activations. min_vram_gb: 280 encodes the per-GPU class, so a B200 (179 GB) is refused.
+#      UpCloud lists B300 (288 GB) on its pricing page but publishes no plan identifier, and
+#      min_plan now has to be a real one — bin/spin reads it to choose the plan to deploy. With the
+#      key absent, bin/spin falls back to the OpenTofu default and the preflights refuse the run,
+#      which is the right outcome here.
+#   2. DRIVER. The kimi-k3 image is CUDA 13 (cu130) only — no cu129 tag, and the K3 wheels are not
+#      on the cu129 nightly index. It needs an r580+ host driver, which the UpCloud GPU template
+#      decides; min_driver_major: 580 checks that before the container starts.
+#   3. DISK. ~1561 GB of weights needs WEIGHTS_SIZE_GB around 1700. At MaxIOPS that is ~EUR 374/mo
+#      standing, billed whether or not a GPU exists — by far the largest number in this repo.
+#
+# If a suitable tier appears, the recipe's cross-node notes are: --all2all-backend deepep_v2 for
+# RDMA and flashinfer_nvlink_one_sided for NVLink, with --moe-backend deep_gemm_mega_moe for DEP
+# over cross-node NVLink (GB200/GB300). DeepGEMM MegaMoE is not compatible with cross-node RDMA.
+#
+# max_model_len 262144 is a conservative quarter of the native 1,048,576; the recipe gives no
+# measured context figure to justify starting at full length.
+#
+# Neither rebuild helps the fit: nvidia/Kimi-K3-NVFP4 is larger at ~1610 GB and RedHatAI's FP8-BLOCK
+# larger still at ~2820 GB. Moonshot's own checkpoint is the smallest of the three.
+model_repo: "moonshotai/Kimi-K3"
+served_name: "kimi-k3"
+vllm_image_override: "vllm/vllm-openai:kimi-k3"
+tensor_parallel_size: 8
+max_model_len: 262144
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--reasoning-parser"
+  - "kimi_k3"
+  - "--tool-call-parser"
+  - "kimi_k3"
+  - "--enable-auto-tool-choice"
+min_vram_gb: 280               # per-GPU floor: GB300/B300 class. A B200 (179 GB) is refused.
+min_disk_gb: 1700   # disk size to provision: (weights_gb + 80) / 0.934; raised to this profile's stated floor
+weights_gb: 1454   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+min_compute_capability: 10.0
+min_driver_major: 580          # the kimi-k3 image is a cu130 build and needs an r580+ host driver
+validated: false               # newly added — no live run on this account yet
+health_wait_retries: 1500      # x10s = 250 min — ~1561 GB to pull, then TP=8 init

@@ -1,0 +1,78 @@
+---
+# DeepSeek-V4-Flash-Vision-Exp — experimental multimodal V4 (285B total / 13B active MoE, 43 layers
+# plus a 32-layer ViT and two-layer aligner). Mixed precision: MoE experts FP4, attention/norm/router
+# FP8, vision tower BF16 — 48 shards, ~168 GB on disk. The recipe budgets ~202 GB of VRAM before KV,
+# so this is a multi-GPU profile (TP=4).
+#
+# PINNED IMAGE (required): vision support is not in a stable release — it lives in
+# vllm-project/vllm#54566. The official wheel routes this checkpoint to the text-only class and
+# fails on the vision tensors, so this profile overrides the shared image pin.
+#
+# HARDWARE: B200 for now, though 4x RTX PRO 6000 would fit comfortably (~202 GB across 380 GB, at
+# 6.60 EUR/h against 18.00) and min_vram_gb 90 already clears a 95 GB card. The cc 12.0 gate below
+# is the only thing holding this on B200.
+#
+# WHY THE GATE IS THERE: sparse attention. vllm-project/vllm#55757 reports DeepSeek-V4 unservable
+# on sm_120, and the failure hides — short prompts answer correctly and realistic prompt lengths
+# break, so a smoke test signs off on a broken build.
+#
+# The FP4 experts are fine on a cu130 build: flashinfer-ai/flashinfer#2708 fixes the CUTLASS grouped
+# block-scaled GEMM and is in vLLM's FlashInfer pin. Much of the "NVFP4 MoE returns garbage"
+# reporting turned out to be vllm-project/vllm#54189 — an uninitialised w13_input_scale that zeroes
+# every expert output on a weight-only checkpoint.
+#
+# WHEN TO OPEN THE LANE. vllm-project/vllm#41834 adds SM12x support for DeepSeek V4 Flash, but as of
+# 2026-09-19 it is 288 commits over 221 files with conflicts, and its tagged preview
+# (sm120-pr-41834-stable-preview-20260809, aa0d513027) is validated on
+# deepseek-ai/DeepSeek-V4-Flash-0731 — a text checkpoint with no profile here, so not direct
+# evidence for the vision build. Re-check that tag, then drop unsupported_compute_capabilities, set
+# min_plan to GPU-64xCPU-320GB-4xRTXPRO6000, and add the overlay to vllm_plugins the way
+# glm53-flash-nvfp4.yml does.
+#
+# Expensive tier: only NVIDIA GB200 NVL4 (TP4 + expert parallel) and AMD MI350X have a published
+# vision run, and UpCloud has neither. The nearest verified-equivalent topology is 4x B200 with
+# NVLink at ~18 EUR/h — too costly to validate speculatively. 2x B200 (TP=2, 384 GB, ~9 EUR/h) also
+# clears the 202 GB budget and is what the ROCm run used, but has no published NVIDIA run.
+#
+# max_model_len 32768 is the recipe's measured bound; the checkpoint advertises 1,048,576. A
+# 1M-token KV cache needs far more memory than the weights do, so raise this only after reading the
+# KV pool vLLM reports at startup.
+# --allowed-local-media-path is omitted — it is only needed for file:// image URLs, and clients here
+# send http(s):// or base64. The repo ships no Jinja template; vLLM resolves --tokenizer-mode
+# deepseek_v4 itself.
+model_repo: "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp"
+served_name: "deepseek-v4-flash-vision"
+vllm_image_override: "vllm/vllm-openai:deepseekv4-flash-vision"
+tensor_parallel_size: 4
+max_model_len: 32768
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+extra_vllm_args:
+  - "--enable-expert-parallel"
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--block-size"
+  - "256"
+  - "--tokenizer-mode"
+  - "deepseek_v4"
+  - "--reasoning-parser"
+  - "deepseek_v4"
+  - "--tool-call-parser"
+  - "deepseek_v4"
+  - "--enable-auto-tool-choice"
+  # DSpark: the draft module is fused into this same checkpoint, so there is no separate draft model.
+  - "--speculative-config"
+  - '{"method":"dspark","model":"deepseek-ai/DeepSeek-V4-Flash-Vision-Exp","num_speculative_tokens":3,"draft_sample_method":"probabilistic","enable_adaptive_verification":true}'
+min_plan: "GPU-96xCPU-960GB-4xB200"
+min_vram_gb: 90    # per-GPU floor: ~202 GB budget across TP=4, plus KV headroom at 32K
+min_disk_gb: 260   # disk size to provision: (weights_gb + 80) / 0.934
+weights_gb: 156   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+min_compute_capability: 10.0
+unsupported_compute_capabilities: [12.0]
+unsupported_reason: >-
+  DeepSeek-style sparse MLA has no working attention path on RTX Blackwell (cc 12.0) —
+  vllm-project/vllm#55757, where a short-prompt smoke test passes and realistic prompts fail.
+  vllm-project/vllm#41834 is the open SM12x enabler; see the note at the top of this profile
+validated: false     # newly added — no live run on this account yet
+health_wait_retries: 150   # x10s = 25 min — ~168 GB of weights plus TP=4 engine init and DSpark setup

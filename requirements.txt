@@ -1,5 +1,18 @@
 # Python tooling for the control machine (operator side).
-# Install into a venv:  python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
-ansible>=10,<12
-ansible-lint>=24
-jmespath>=1.0
+#
+# REQUIRES PYTHON 3.11, 3.12 OR 3.13. Versions outside that range fail to install or to run:
+#   * below 3.11 — ansible-core 2.18 (what ansible 11.x pulls in) declares requires_python >=3.11,
+#     so pip finds no candidate and reports every version it ever published instead of the cause.
+#     macOS still ships 3.9 as /usr/bin/python3, which is the usual way to land here.
+#   * 3.14 and above — ansible-lint 26 refuses to import, with
+#     "Python 3.14 requires ansible-core version >= 2.20.0, and we found 2.18.19".
+#     Raise the ansible pin past 12 before moving the control machine to 3.14.
+#
+# Versions are pinned exactly so two machines get the same Ansible. Bump them deliberately and
+# re-run the render tests; pinning alone does not protect against the Python floor above.
+#
+# Install into a venv, naming the interpreter rather than trusting `python3`:
+#   python3.12 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+ansible==11.13.0
+ansible-lint==26.8.0
+jmespath==1.1.0

@@ -1,8 +1,10 @@
 ---
-# Gemma 4 31B in NVFP4 — Blackwell (B200) ONLY. Official NVIDIA ModelOpt checkpoint (~21 GB).
-# Dense, so no FlashInfer-MoE env needed. Quant auto-detected (do NOT pass --quantization).
-# min_vram_gb=175 pins this to the B200 (NVFP4 will not run on L40S/H100). Live-validated on B200
-# 2026-07-05 (262144, KV 2.42M tok, 9.22x, 166/183 GiB; soak 6/6).
+# Gemma 4 31B in NVFP4 — Blackwell-class GPUs (B200 or RTX PRO 6000). Official NVIDIA ModelOpt
+# checkpoint (~21 GB). Dense, so it uses the NVFP4 scaled-mm path rather than the grouped-GEMM MoE
+# kernels that misbehave on RTX Blackwell — hence this one runs on cc 12.0 and the NVFP4 *MoE*
+# profiles do not. Quant auto-detected (do not pass --quantization). min_compute_capability keeps it
+# off L40S/H100, which have no NVFP4 support at all. Live-validated on B200 2026-07-05 (262144,
+# KV 2.42M tok, 9.22x, 166/183 GiB; soak 6/6). Not yet validated on RTX PRO 6000.
 model_repo: "nvidia/Gemma-4-31B-IT-NVFP4"
 served_name: "gemma4-31b-nvfp4"
 tensor_parallel_size: 1
@@ -20,5 +22,9 @@ extra_vllm_args:
   - "gemma4"
   - "--kv-cache-dtype"
   - "fp8"
-min_plan: "GPU-24xCPU-240GB-1xB200"
-min_vram_gb: 175   # B200 reports 179 GB after floor-div (183,359 MiB) — measured live 2026-07-04
+min_plan: "GPU-24xCPU-240GB-1xB200"   # the validated tier; 1xRTXPRO6000 also passes, untested
+min_vram_gb: 40                  # ~21 GB weights + KV; keeps an L4/L40S-sized card out
+min_disk_gb: 120   # disk size to provision: (weights_gb + 80) / 0.934
+weights_gb: 30   # measured 2026-09-20 from the HF file listing (sum of .siblings[].size)
+min_compute_capability: 10.0     # Blackwell or newer: B200 (cc 10.0) and RTX PRO 6000 (cc 12.0)
+untested_compute_capabilities: [12.0]   # dense NVFP4 should run on RTX PRO 6000; not yet measured

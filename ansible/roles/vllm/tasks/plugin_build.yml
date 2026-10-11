@@ -1,0 +1,69 @@
+---
+# One plugin from vllm_plugins. Included per item by plugins.yml.
+
+- name: Set the build paths for {{ plugin.name }}
+  ansible.builtin.set_fact:
+    plugin_dest: "{{ vllm_plugin_root }}/{{ plugin.name }}-{{ plugin.ref[:12] }}"
+    plugin_src: "{{ vllm_plugin_root }}/src/{{ plugin.name }}-{{ plugin.ref[:12] }}"
+
+# Gate on a marker written only after the build is verified. A bare directory check would treat a
+# half-finished build as done: `docker run -v dest:/out` creates the directory on the host even when
+# the build inside it fails.
+- name: Check for an existing pinned build of {{ plugin.name }}
+  ansible.builtin.stat:
+    path: "{{ plugin_dest }}/.build-complete"
+  register: plugin_built
+
+# Everything below is skipped on a re-run, so a redeploy costs nothing once the commit is built.
+- name: Clone the pinned source of {{ plugin.name }}
+  ansible.builtin.git:
+    repo: "{{ plugin.repo }}"
+    dest: "{{ plugin_src }}"
+    version: "{{ plugin.ref }}"
+  when: not plugin_built.stat.exists
+
+- name: Pull the image that will build {{ plugin.name }}
+  ansible.builtin.command:
+    cmd: "docker pull {{ vllm_image_override | default(vllm_image) }}"
+  changed_when: false
+  register: plugin_image_pull
+  retries: 5
+  delay: 15
+  until: plugin_image_pull.rc == 0
+  when: not plugin_built.stat.exists
+
+# The image ships cuda-nvcc (vLLM installs it in its runtime base stage), so the extension compiles
+# against the exact torch and Python ABI it will run under. --target keeps the result a plain
+# directory that goes on PYTHONPATH rather than an install into the image.
+- name: Compile the CUDA extension for {{ plugin.name }}
+  ansible.builtin.command:
+    cmd: >-
+      docker run --rm
+      -v {{ plugin_src }}:/src
+      -v {{ plugin_dest }}:/out
+      {% for k, v in (plugin.build_env | default({})).items() %}-e {{ k }}={{ v }} {% endfor %}
+      --entrypoint /bin/sh
+      {{ vllm_image_override | default(vllm_image) }}
+      -c "pip install --no-build-isolation --target /out /src"
+  changed_when: true
+  when: not plugin_built.stat.exists
+
+- name: Confirm a compiled artifact exists for {{ plugin.name }}
+  ansible.builtin.find:
+    paths: "{{ plugin_dest }}"
+    patterns: "*.so"
+    recurse: true
+  register: plugin_artifacts
+  failed_when: plugin_artifacts.files | length == 0
+  when: not plugin_built.stat.exists
+
+- name: Write the build marker for {{ plugin.name }}
+  ansible.builtin.copy:
+    content: "{{ plugin.repo }}@{{ plugin.ref }}\n"
+    dest: "{{ plugin_dest }}/.build-complete"
+    mode: "0644"
+  when: not plugin_built.stat.exists
+
+- name: Record the container mount path for {{ plugin.name }}
+  ansible.builtin.set_fact:
+    vllm_plugin_mounts: "{{ (vllm_plugin_mounts | default([])) + [plugin_dest] }}"

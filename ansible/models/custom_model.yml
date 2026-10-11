@@ -1,0 +1,74 @@
+---
+# CUSTOM MODEL — the recipe to copy when you want to serve something this repo has no profile for.
+# The checkpoint set here really runs, so the file doubles as a working example.
+#
+# Copy it to ansible/models/<your-name>.yml rather than editing in place, change the four marks
+# below (repo, served name, serving args, sizing), and run the offline gates:
+#
+#     make test
+#     python3 tests/check-vllm-compat.py <your-name>
+#
+# Nothing registers a profile — the filename is the name, so `bin/spin up --model <your-name>` picks
+# yours up with no other change. Read .claude/skills/adding-a-model-profile/SKILL.md before changing
+# the sizing keys: most mistakes there surface only after a paid server has downloaded several
+# hundred gigabytes.
+#
+# EDIT ME (1): the Hugging Face repo id.
+model_repo: "EDIT/ME"
+# EDIT ME (2): the name clients send in the OpenAI `model` field. bin/spin prints it after a deploy;
+# /v1/models is authoritative. In llama-swap mode the profile filename is used instead.
+served_name: "custom-model"
+# For your own model, check with tests/check-vllm-compat.py and
+# pin by digest whenever the tag is mutable.
+vllm_image_override: "xxxxxx"
+tensor_parallel_size: 4
+max_model_len: 1048576
+gpu_memory_utilization: 0.90
+dtype: "auto"
+enable_lora: false
+vllm_plugins:
+  - name: sparse-mla-blackwell
+    repo: "https://github.com/Libertai/vllm-sparse-mla-blackwell"
+    ref: "b1f20638d7f82f880e4bcb2136ee2f19c06f38a4"
+    build_env:
+      GLM53_ARCHS: "120a" # example
+extra_env:
+  VLLM_GLM53_CUDA_SPARSE_MLA: 1   # example
+# EDIT ME (3): the serving command from your model's own recipe.
+# FLAGS THAT ARE NOT PREFERENCES:
+#   --no-enable-flashinfer-autotune : inherited from glm53-flash-nvfp4, where autotune spun the GPU
+#     at 100% with no output until the NCCL watchdog killed it. Not re-measured for this quant, and
+#     kept because the failure it prevents is expensive and the flag costs nothing.
+#   --kv-cache-dtype fp8 : the overlay kernel supports it; bf16 also works at about half the KV.
+#   parsers glm47 : this is a GLM-5.3 derivative and uses the base model's reasoning/tool format.
+# MTP is left off: config.json has num_nextn_predict_layers: 1, so a draft head exists, but a first
+# validation should measure the model alone. Enable with:
+#   - "--speculative-config"
+#   - '{"method":"mtp","num_speculative_tokens":3}'
+extra_vllm_args:
+  - "--no-enable-flashinfer-autotune"
+#  - "--no-enable-prefix-caching"
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--reasoning-parser"
+  - "glm47"
+  - "--tool-call-parser"
+  - "glm47"
+  - "--enable-auto-tool-choice"
+# EDIT ME (4): sizing. min_plan must appear in tests/plans.txt — CI checks it, and bin/spin refuses
+# any plan above MAX_EUR_PER_HOUR (default 10) until you pass --allow-expensive.
+# Hybrid attention: most layers carry recurrent state, which is what makes
+# --no-enable-prefix-caching mandatory above. tests/check-prefix-caching.sh keys on this.
+hybrid_recurrent_state: true
+min_plan: "GPU-64xCPU-320GB-4xRTXPRO6000"
+min_vram_gb: 90                # per-GPU floor: RTX PRO 6000 reports 95, B200 179; keeps H100 (79) out
+weights_gb: 181                # measured from the HF file listing (sum of .siblings[].size) 2026-09-21
+min_disk_gb: 280               # (181 + 80) / 0.934, rounded up to 10 — see the skill for the derivation
+min_compute_capability: 10.0   # Blackwell; the overlay kernel covers sm_120 and sm_121
+min_driver_major: 580          # the image is a cu130 build
+# Deliberately false even though the example checkpoint has a dated row in docs/validation.md: this
+# file is the copy-me template, so `validated: true` here would become a claim about whatever model
+# the next person points it at. It only warns, never blocks. Set it true in your copy, once your row
+# exists.
+validated: false
+health_wait_retries: 300       # x10s = 50 min: ~181 GB to pull, plugin build, then TP=4 init

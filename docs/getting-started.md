@@ -22,9 +22,12 @@ You need:
 
 - An UpCloud account with GPU plans enabled. GPUs exist only in the `fi-hel2` zone.
 - An UpCloud API token, created in the control panel under People → API tokens.
+- **Python 3.11, 3.12 or 3.13** on the control machine. Versions outside that range fail; macOS
+  ships 3.9 as `/usr/bin/python3`, which is the common cause. See step 1.
 - A machine to drive it from, with `tofu` (OpenTofu 1.7 or newer), `ansible-playbook`, `curl`,
   `jq` and `ssh` on `PATH`. `bin/spin` checks all five at startup and stops with a clear error if
-  one is missing. `upctl`, the UpCloud CLI, is optional but makes one setup step much easier.
+  one is missing. `upctl`, the UpCloud CLI, is optional — step 3 shows how to do the one thing
+  it is useful for without it.
 
 Understand the two cost buckets before you create anything:
 
@@ -34,16 +37,36 @@ Understand the two cost buckets before you create anything:
 | Standing | 24 hours a day, GPU or no GPU | persistent disk and floating IP |
 
 The default L40S tier runs at roughly €1.11/hour. The default 150 GB disk plus a floating IP is
-roughly €37/month and keeps billing after `bin/spin down`. Off is cheap, not free. Reaching zero
-takes a deliberate `bin/spin persistent-destroy`, covered in step 7.
+roughly €36/month and keeps billing after `bin/spin down`. Getting to zero takes a separate
+command, `bin/spin persistent-destroy`, covered in step 7.
 
 ## Step 1 — Prepare the control machine
 
+Check the interpreter before building the venv, because the failure otherwise arrives as a
+wall of every Ansible version ever published rather than a version error:
+
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+python3 -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}"); assert (3,11) <= v < (3,14), "need Python 3.11-3.13"'
+```
+
+If that fails, name a suitable interpreter explicitly rather than trusting `python3` — on macOS
+`python3` is often the system 3.9, while Homebrew's newer ones sit alongside it:
+
+```bash
+ls /opt/homebrew/bin/python3.1* /usr/local/bin/python3.1* 2>/dev/null
+```
+
+Then, substituting the version you found:
+
+```bash
+python3.12 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
+
+Why the range: `ansible-core` 2.18 requires 3.11 or newer, and `ansible-lint` 26 refuses to run
+on 3.14 while `ansible-core` is below 2.20. Both are pinned exactly in `requirements.txt`, which
+CI installs too, so a working control machine here matches a working one there.
 
 Nothing in this step touches the cloud.
 
@@ -65,7 +88,7 @@ Required:
 | `ACME_EMAIL` | Let's Encrypt contact address. Must be a real, deliverable address. |
 | `VLLM_API_KEY` | The bearer token your clients send. Generate one: `openssl rand -hex 32`. |
 
-`ACME_EMAIL` is checked before deployment, not after. Let's Encrypt refuses placeholder domains,
+`ACME_EMAIL` is checked before anything is provisioned. Let's Encrypt refuses placeholder domains,
 and Caddy would then never obtain a certificate while everything else reported success, so the
 deploy fails fast on an address ending in `example.com`, `example.org`, `example.net`, `.invalid`,
 `.local` or `.test`. Use an address you actually receive mail at.
@@ -90,13 +113,75 @@ cp terraform/providers/upcloud/terraform.tfvars.example \
    terraform/providers/upcloud/terraform.tfvars
 ```
 
+**Edit the copy before going further.** It lands with an `os_template` of `REPLACE_ME` and an
+empty key list. Nothing in the persistent stack reads this file, so an unedited copy goes
+unnoticed until the ephemeral apply. `bin/spin up` refuses to start until both are filled in.
+
 Two values are required and have no defaults:
 
-- `os_template` — the UpCloud public template that ships the NVIDIA driver, CUDA and Docker. Find
-  its exact title or UUID with `upctl storage list --public --template`. The Terraform plan refuses
-  to run while it is unset.
+- `os_template` — the UpCloud public template that ships the NVIDIA driver, CUDA and Docker. The
+  Terraform plan refuses to run while it is unset. With `upctl` installed:
+
+  ```bash
+  upctl storage list --public --template
+  ```
+
+  Without it, read the same list from the API using the token already in `.env`:
+
+  ```bash
+  set -a; . ./.env; set +a
+  curl -fsS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+    https://api.upcloud.com/1.3/storage/template \
+    | jq -r '.storages.storage[] | select(.title|test("GPU|NVIDIA|CUDA";"i")) | "\(.uuid)  \(.title)"'
+  ```
+
+  Either the UUID or the exact title works in `terraform.tfvars`. The list also contains
+  `UpCloud K8s ... (with NVIDIA drivers & CUDA)` entries — those are Kubernetes node images.
+  You want the plain `Ubuntu Server ... (with NVIDIA drivers & CUDA)` one.
 - `ssh_public_keys` — the keys installed for root login on the GPU box. Without one you cannot
   reach the server you just paid for.
+
+**Deploying from more than one machine.** Both gates that let you reach the box are per-machine,
+and both fail in ways that look like something else:
+
+- **The key must be in `ssh_public_keys` before the server is created.** `login { keys = ... }` in
+  `terraform/providers/upcloud/main.tf` is create-time metadata, so adding a key to
+  `terraform.tfvars` does not change a server that already exists — it applies to the next one
+  built. A machine whose key is missing gets `Permission denied (publickey)`, which `bin/spin`
+  currently cannot distinguish from a box that is still booting, so it waits the full SSH timeout
+  first. To add a key to a *running* box, append it to `~/.ssh/authorized_keys` there from a
+  machine that can already log in, and put it in `terraform.tfvars` as well so the next build
+  keeps it.
+- **The machine's public IP must be in `OPERATOR_CIDRS`.** The firewall allowlists SSH(22) and
+  HTTPS(443) to those ranges only, so `bin/spin validate` and `bin/spin soak` need it too, not
+  just the deploy. `bin/spin up` refuses to provision when this machine's address is outside the
+  list, rather than creating a server it cannot reach. Set it as a **single** assignment in
+  `.env` — the file is sourced top-to-bottom, so a second `OPERATOR_CIDRS=` line silently wins:
+
+      OPERATOR_CIDRS=198.51.100.0/24,203.0.113.7/32
+
+  Editing the rule in the provider console does not work: OpenTofu owns
+  `upcloud_firewall_rules.gpu` and reverts it on the next apply. `SKIP_REACHABILITY_CHECK=1`
+  bypasses the check for a jump-host setup you reach another way.
+
+**A changing egress address.** If the control machine's public IP rotates — a mobile or tethered
+link, or a VPN with several exits — the allowlist goes stale mid-run and every later step fails as
+a timeout rather than as a permission error. Measured on 2026-09-20: switching networks moved the
+address twice inside one session. Two consequences:
+
+- An **in-flight deploy dies** when the address changes, because Ansible multiplexes over one SSH
+  connection (`ControlMaster` in `ansible.cfg`) and that session cannot survive it. The play ends
+  with `UNREACHABLE!` and `failed=0` — no task actually failed. Re-running `bin/spin up` resumes:
+  the weights are on `/data` and the vLLM container runs detached, so a dropped control connection
+  does not interrupt a download in progress.
+- If the address rotates within a known range, allowlisting that range is steadier than chasing
+  single addresses. Weigh it against the exposure: SSH and HTTPS become reachable from the whole
+  range, on a box with key-only auth and no password login. Narrow it again once back on a stable
+  link.
+
+**Timeouts.** `bin/spin up` waits ~20 minutes for SSH; a 4-GPU tier with a large attached disk has
+been measured taking over 10. Raise it with `SSH_WAIT_TRIES=360` (each try is 5s). Authentication
+failures are not waited out — they fail immediately with the offending key fingerprint.
 
 Everything else in that file is an optional override, including `plan`, which defaults to
 `GPU-8xCPU-64GB-1xL40S`.
@@ -104,17 +189,43 @@ Everything else in that file is an optional override, including `plan`, which de
 `terraform/persistent/terraform.tfvars` is entirely optional — every variable in that stack has a
 default, and `WEIGHTS_SIZE_GB` in `.env` covers the one you are likely to change.
 
+### Sizing the weights disk
+
+Decide this before step 4, because UpCloud cannot shrink a disk afterwards. Two thresholds sit
+close together:
+
+| Size | What changes |
+|---|---|
+| under ~110 GB | The filesystem reports under 100 GB, so Docker's data-root stays on the boot disk and the ~23 GB vLLM image is pulled again on every spin-up. |
+| 110–149 GB | Image and weights both persist on `/data`, and `bin/spin down` **keeps** the disk, so the next spin-up is minutes. |
+| 150 GB and above | `bin/spin down` **deletes** the disk by default (`DECOMMISSION_THRESHOLD_GB`), so the next spin-up re-downloads everything. |
+
+For a first run on the default `qwen36` (~27 GB of weights plus the ~23 GB image), **120** is the
+useful choice — large enough to keep the image, small enough that a teardown does not throw the
+cache away:
+
+```bash
+WEIGHTS_SIZE_GB=120
+```
+
+That is about €30/month while the disk exists, or €0.04/hour. Larger models need much more; each
+profile in `ansible/models/` states its own figure in the header comment.
+
 ## Step 4 — Create the persistent layer
 
-Run once, ever:
+Run this once:
 
 ```bash
 bin/spin persistent-init
 ```
 
+OpenTofu prints a plan and waits for you to type `yes`. Any other answer cancels the apply. The
+command stops on the first failure, so a cancelled apply returns to the shell prompt with no
+further output and nothing created. Confirm with `tofu -chdir=terraform/persistent output`.
+
 This creates the weights disk and the floating IP, and prints the IP. The dashed form of that IP
-becomes your permanent hostname — `<dashed-ip>.sslip.io` — which is what lets the TLS certificate
-survive from one session to the next.
+is your permanent hostname, `<dashed-ip>.sslip.io`. Because the hostname never changes, the TLS
+certificate stored on the disk stays valid across sessions.
 
 Both resources are guarded against a stray `tofu destroy`. The standing bill starts here.
 
@@ -124,10 +235,22 @@ Both resources are guarded against a stray `tofu destroy`. The standing bill sta
 bin/spin up
 ```
 
-That deploys the default profile, `qwen36`, on an L40S. To pick something else:
+That deploys the default profile, `qwen36`, on an L40S.
+
+**Check the auto-shutdown time before a first run.** Every deploy installs a timer that powers
+the box off at 21:00 `Europe/Zurich` by default, and it fires regardless of what the box is
+doing — including a deployment still in progress. If you are starting in the evening, or in
+another timezone, set it now rather than discovering it mid-download:
+
+```bash
+bin/spin up --shutdown-at 23:30 --shutdown-tz Area/City
+```
+
+Step 7 covers the rest of that timer. To pick a different model:
 
 ```bash
 bin/spin up --model qwen36-35b --plan GPU-12xCPU-240GB-1xH100
+bin/spin up --model qwen36 --plan GPU-16xCPU-80GB-1xRTXPRO6000
 ```
 
 `up` runs through: create the server and firewall, rebind the floating IP, wait for SSH, then
@@ -139,7 +262,7 @@ The health wait allows 15 minutes by default, and larger profiles raise their ow
 spin-up with the same model and a kept disk is much faster, because the weights and the container
 image are already on `/data`.
 
-Two things are normal rather than broken:
+Two things look like failures but are not:
 
 - **No capacity.** GPU tiers sell out. `up` recognises the refusal and suggests retrying or
   choosing another tier. Nothing was created, and nothing is billing.
@@ -171,8 +294,13 @@ curl https://<dashed-ip>.sslip.io/v1/chat/completions \
 ```
 
 For a fuller check, `bin/spin validate` reports the served model, context length, KV cache size and
-VRAM use, and runs a test generation. `bin/spin soak` grades a short factual battery and fires
-parallel requests to confirm the box stays healthy under load.
+VRAM use, and runs a test generation. `bin/spin soak` grades a short factual battery, checks the
+model declines fabricated premises, then runs a **graded long-context load**: each of 20 parallel
+requests gets its own haystack with a unique needle at a known depth and is graded on retrieving
+it. A wrong answer from an admitted request fails the command; rejections and timeouts are reported
+separately, as admission control rather than a correctness problem. Scale it up with `--context`
+and `--rounds` — a model can pass at 32k and kill the engine at 128k. Prompts cross the public
+endpoint, so the heavy tiers move real bandwidth: ~2.5 MB per round at 32768, ~10 MB at 131072.
 
 ## Step 7 — Shutting down
 
@@ -189,23 +317,22 @@ Three levels, in increasing order of what they destroy:
 **It also deletes the weights disk by default.** The rule is to remove any disk at or above
 `DECOMMISSION_THRESHOLD_GB`, which defaults to 150 — the same as the default disk size. So with
 stock settings, a teardown frees the standing cost and the next spin-up re-downloads every model.
-That is the right trade if you spin up rarely. If you work daily, keep the cache:
+That suits occasional use. If you spin up daily, keep the cache:
 
 ```bash
 bin/spin down --keep-disk
 ```
 
-or set `DECOMMISSION_ON_DOWN=never` in `.env` once and forget about it. Either way the floating IP
-is kept, so the hostname and certificate stay valid.
+or set `DECOMMISSION_ON_DOWN=never` in `.env`, which applies to every teardown. Either way the
+floating IP is kept, so the hostname and certificate stay valid.
 
 `bin/spin persistent-destroy --yes` is the only path to zero. It deletes the disk and releases the
 IP, refuses to run while a GPU server still exists, and refuses without `--yes`. It is
 irreversible: you lose the cached weights, the IP and the certificate.
 
-There is also a safety net you did not ask for. Every deploy installs a systemd timer that powers
-the box off at a fixed local time, defaulting to 21:00 `Europe/Zurich`, so a server you forget
-about stops billing. It powers off, never destroys, and `bin/spin start` brings it back. Set your
-own time and zone at deploy time:
+Every deploy also installs a systemd timer that powers the box off at a fixed local time,
+defaulting to 21:00 `Europe/Zurich`, so a forgotten server stops billing. It only powers off, and
+`bin/spin start` brings it back. Set your own time and zone at deploy time:
 
 ```bash
 bin/spin up --shutdown-at 23:30 --shutdown-tz Area/City
@@ -220,19 +347,40 @@ model that takes an hour to load, start early or turn the timer off for that run
 Profiles live in `ansible/models/`, one file per model and quantisation. Pick one with `--model`.
 The README carries the full table; the rules behind it are short:
 
-- FP8 profiles run on L40S and H100.
-- NVFP4 profiles run only on Blackwell hardware, meaning B200. They are roughly half the size and
-  faster, and they will not load anywhere else.
-- Every profile declares the VRAM it needs. A deploy onto too small a plan fails in preflight,
-  before vLLM starts, rather than out-of-memorying on a GPU you are already paying for.
-- A profile marked `requires_review` needs `--allow-unvalidated` and a large multi-GPU plan.
+- **You usually do not pick a tier.** Each profile names the plan it is meant for, and `bin/spin up
+  --model <name>` deploys that. Pass `--plan` only to override it. On a server that already exists
+  the live plan wins, and a mismatch with the profile's is an error rather than a silent resize.
+- FP8 profiles run on any tier from the L40S up.
+- NVFP4 profiles need Blackwell. They are roughly half the size and faster, and they will not load
+  on an L40S or H100 at all.
+- Which Blackwell tier matters. The RTX PRO 6000 (96 GB, €1.65/h) is compute capability 12.0; the
+  B200 (192 GB, €4.50/h) is 10.0. Dense NVFP4 runs on both. What keeps the big MoE models on B200
+  is **sparse attention**, which has no working sm_120 path (vllm#55757) — and it fails late, so a
+  short smoke test passing is not evidence it works.
+- Every profile declares the VRAM, GPU generation and GPU count it needs. A deploy onto the wrong
+  plan fails in preflight, before vLLM starts and before any weights download. It will not run out
+  of memory on a GPU you are already paying for.
+- A plan costing more than `MAX_EUR_PER_HOUR` (default €10/h) needs `--allow-expensive`. The
+  refusal names the price, the daily cost and the cheaper spot id, and comes before anything is
+  provisioned.
+
+Each profile also names the tier it has been measured on. Running it elsewhere is allowed and
+prints a warning. Treat that deployment as a validation run: capture `bin/spin validate` and
+`bin/spin soak` and add the row to [validation.md](validation.md).
+
+H100 and B200 both run short of capacity regularly. The RTX PRO 6000 is usually available and covers
+every FP8 profile and the two dense NVFP4 ones, and it is the default lane for `qwen38-flash-next`,
+`glm53-flash-nvfp4` and `k2-horizon-375b`. It has no measured runs yet, so expect the untested
+warning — and when you get one, capture `bin/spin validate` and `bin/spin soak` and add the row.
+The H100 remains where `qwen36-35b` was measured.
 
 To serve several models from one endpoint, use a swap preset. One model sits in VRAM at a time and
 the rest load on demand, so size the box for the largest member of the set, not their sum:
 
 ```bash
 bin/spin swap-profiles
-bin/spin up --swap-profile l40s --plan GPU-8xCPU-64GB-1xL40S
+bin/spin up --swap-profile l40s          # the preset names its own plan (swap_plan)
+bin/spin up --swap-profile rtxpro6000
 ```
 
 Presets are just lists of profile names in `ansible/swap-profiles/`; add one by dropping in a file.
@@ -246,7 +394,7 @@ bin/spin logs            # follow vLLM and Caddy, or llama-swap in multi-model m
 bin/spin ssh             # root shell on the box
 bin/spin plan            # tofu plan for the ephemeral stack, changes nothing
 bin/spin validate        # served model, context, KV cache, VRAM, test generation
-bin/spin soak            # answer-quality battery plus a concurrent-load round
+bin/spin soak            # answer-quality battery plus a graded 20-way long-context load
 bin/spin help            # every command and flag
 ```
 
@@ -266,6 +414,10 @@ stays empty in multi-model mode. The rest of it, and all of `soak`, work either 
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `persistent-init` returns with no output at all | The OpenTofu confirmation was not answered `yes`, so the apply was cancelled and the command stopped. | Re-run it and type `yes` at the prompt. |
+| `up` prints "Persistent weights disk missing — recreating it first..." then stops | Older builds called the interactive `persistent-init` from inside the non-interactive `up`. | Fixed: that path now auto-approves. Run `bin/spin persistent-init` on its own first if you are on an older checkout. |
+| `terraform.tfvars still has os_template = "REPLACE_ME"` | Step 3's file was copied but not edited. | Fill in `os_template` and `ssh_public_keys`; the error prints the command that lists templates. |
+| `Could not find a version that satisfies the requirement ansible` | The venv was built with a Python older than 3.11 (often macOS's `/usr/bin/python3`, 3.9). | Delete `.venv`, rebuild it naming a 3.11–3.13 interpreter (step 1). |
 | `required tool 'X' not found in PATH` | Missing dependency on the control machine. | Install it, or point `TOFU` at a non-standard OpenTofu binary. |
 | `UPCLOUD_TOKEN not set` | `.env` missing or not filled in. | Complete step 2. Run `bin/spin` from the repository root. |
 | Deploy fails on `ACME_EMAIL must be a REAL deliverable address` | A placeholder contact address. | Use an address you receive mail at. |
@@ -274,7 +426,7 @@ stays empty in multi-model mode. The rest of it, and all of `soak`, work either 
 | A deploy fails at `Wait for vLLM to report healthy`, but the box looks fine | A large model outlasted the health wait. | Poll `https://<dashed-ip>.sslip.io/v1/models` before tearing anything down — the model usually finishes loading. |
 | `404` from a chat completion | Wrong name in the `model` field. | Query `/v1/models` and use exactly what it returns. |
 | `needs ~N GB of VRAM but this GPU reports M GB` | Profile too large for the plan. | Use the plan named in the message, or a larger one. |
-| `No space left on device` during a download | `/data` is full. It is an LRU cache, not unlimited. | Raise `WEIGHTS_SIZE_GB` and re-run `bin/spin persistent-init`, or trim a swap preset. |
+| `No space left on device` during a download | `/data` is full. It is a fixed-size LRU cache. | Raise `WEIGHTS_SIZE_GB` and re-run `bin/spin persistent-init`, or trim a swap preset. |
 | `Unknown model profile 'X'` | Typo, or a profile that does not exist. | List `ansible/models/`. |
 
 If a server ends up in a state Terraform cannot reconcile, `bin/spin status` and the UpCloud

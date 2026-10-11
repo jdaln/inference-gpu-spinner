@@ -1,5 +1,6 @@
 ---
-# Override with -e if you really intend to run a profile flagged requires_review.
+# Override with -e to bypass the HARDWARE preflights (VRAM, compute capability, known-bad GPU
+# list, driver, disk). Cost is gated separately by bin/spin via MAX_EUR_PER_HOUR.
 allow_unvalidated_model: false
 
 # LoRA serving (enable per-model in the model profile). Adapters are picked at request time by
@@ -8,3 +9,9 @@ enable_lora: false
 max_lora_rank: 16
 max_loras: 4
 lora_modules: []   # e.g. [{ name: "my-adapter", path: "org/my-lora-hf-repo" }]
+
+# Out-of-tree vLLM plugins (see tasks/plugins.yml). A profile sets vllm_plugins when its GPU needs a
+# kernel no released image carries; each entry is built once per pinned commit under this root, on
+# the persistent disk, and mounted read-only into the container.
+vllm_plugins: []
+vllm_plugin_root: "{{ data_root }}/ext"
